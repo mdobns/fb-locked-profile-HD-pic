@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Facebook Profile Picture Downloader & HD Viewer</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="background-glow top-glow"></div>
+  <div class="background-glow bottom-glow"></div>
+
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="badge">
+        <span class="badge-dot"></span>
+        Facebook Profile Tools
+      </div>
+      <h1 class="title">Facebook Profile Picture <span class="gradient-text">Downloader</span></h1>
+      <p class="subtitle">
+        Enter any Facebook Numeric ID, username, or profile URL to view and download the full-resolution profile photo directly to your device.
+      </p>
+    </header>
+
+    <!-- Main Card -->
+    <main class="card main-card">
+      <form id="fetch-form" class="fetch-form">
+        <label for="fb-input" class="input-label">Facebook Profile ID or URL</label>
+        <div class="input-group">
+          <div class="input-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+            </svg>
+          </div>
+          <input 
+            type="text" 
+            id="fb-input" 
+            class="main-input" 
+            placeholder="e.g. 4, zuck, or https://www.facebook.com/zuck" 
+            autocomplete="off" 
+            required 
+          />
+          <button type="button" id="paste-btn" class="paste-btn" title="Paste from clipboard">
+            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+            </svg>
+            Paste
+          </button>
+        </div>
+
+        <!-- Options row -->
+        <div class="options-row">
+          <div class="option-field">
+            <label for="size-select">Preferred Quality:</label>
+            <select id="size-select" class="select-dropdown">
+              <option value="large" selected>HD / Large (Recommended)</option>
+              <option value="normal">Normal (320px)</option>
+              <option value="small">Small (160px)</option>
+              <option value="square">Square Crop</option>
+            </select>
+          </div>
+
+          <div class="quick-samples">
+            <span class="sample-label">Try test:</span>
+            <button type="button" class="sample-chip" data-sample="4">ID: 4 (Zuck)</button>
+            <button type="button" class="sample-chip" data-sample="zuck">Username: zuck</button>
+          </div>
+        </div>
+
+        <!-- Optional Access Token Accordion -->
+        <details class="advanced-details">
+          <summary class="advanced-summary">
+            <span>⚙️ Advanced Settings (Optional Access Token)</span>
+          </summary>
+          <div class="advanced-body">
+            <p class="advanced-hint">
+              If you have a Facebook Developer App Access Token, you can paste it here to authenticate directly with Meta's Graph API for higher rate limits.
+            </p>
+            <input 
+              type="text" 
+              id="custom-token" 
+              class="token-input" 
+              placeholder="Paste Meta Graph API Access Token (Optional)" 
+            />
+          </div>
+        </details>
+
+        <!-- Submit Button -->
+        <button type="submit" id="submit-btn" class="primary-btn">
+          <span class="btn-text">Get Profile Picture</span>
+          <span class="btn-spinner hidden"></span>
+        </button>
+
+        <!-- Scope Warning Banner -->
+        <div class="warning-banner">
+          <span class="warning-icon">⚠️</span>
+          <div class="warning-text">
+            <strong>Important Warning:</strong> This tool will work for <strong>publicly available profiles</strong> and <strong>publicly available locked profiles only</strong>. Profiles that are completely private or hidden from public view cannot be retrieved.
+          </div>
+        </div>
+      </form>
+
+      <!-- Error message container -->
+      <div id="error-box" class="error-box hidden"></div>
+
+      <!-- Result Card -->
+      <div id="result-box" class="result-box hidden">
+        <div class="result-divider"></div>
+        <div class="result-content">
+          <div class="avatar-preview-wrap">
+            <img id="avatar-img" alt="Facebook Profile Picture" class="avatar-img" />
+            <div id="silhouette-notice" class="notice-badge hidden">
+              ⚠️ Silhouette / Restricted
+            </div>
+          </div>
+
+          <div class="result-info">
+            <h3 id="profile-name" class="profile-name">Facebook User</h3>
+            <div class="info-meta">
+              <span class="meta-tag" id="meta-target">Target: -</span>
+              <span class="meta-tag" id="meta-method">Method: -</span>
+              <span class="meta-tag" id="meta-res">Resolution: Max HD</span>
+            </div>
+            <p id="result-description" class="result-description">
+              Photo retrieved successfully. Click the button below to download the high-resolution image to your device.
+            </p>
+
+            <div class="result-actions">
+              <a id="download-btn" href="#" class="action-btn download-btn">
+                <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                Download Image (HD)
+              </a>
+
+              <button type="button" id="copy-link-btn" class="action-btn secondary-btn">
+                <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                </svg>
+                Copy Image URL
+              </button>
+
+              <a id="open-link-btn" href="#" target="_blank" rel="noopener noreferrer" class="action-btn outline-btn">
+                <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                  <polyline points="15 3 21 3 21 9"></polyline>
+                  <line x1="10" y1="14" x2="21" y2="3"></line>
+                </svg>
+                Open in Tab
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Guide & Informational Section -->
+    <section class="card guide-card">
+      <h2 class="section-title">How to Find a Facebook Profile ID</h2>
+      <div class="guide-grid">
+        <div class="guide-item">
+          <div class="guide-step">1</div>
+          <div class="guide-content">
+            <h4>From Profile URL</h4>
+            <p>If the URL is <code>facebook.com/profile.php?id=100084...</code>, the number after <code>id=</code> is the exact Profile ID.</p>
+          </div>
+        </div>
+
+        <div class="guide-item">
+          <div class="guide-step">2</div>
+          <div class="guide-content">
+            <h4>From Custom Username</h4>
+            <p>If the URL has a name like <code>facebook.com/zuck</code>, you can simply paste <code>zuck</code> directly into the search bar above.</p>
+          </div>
+        </div>
+
+        <div class="guide-item">
+          <div class="guide-step">3</div>
+          <div class="guide-content">
+            <h4>One-Click Download</h4>
+            <p>Our server securely handles CDN CORS negotiation so clicking <strong>Download Image</strong> immediately saves the photo as a <code>.jpg</code>.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="privacy-note">
+        <div class="privacy-icon">🛡️</div>
+        <div>
+          <strong>Privacy & Scope Warning:</strong>
+          This tool will work for <strong>publicly available profiles and publicly available locked profiles only</strong>. Facebook restricts completely private or deactivated accounts. For accounts with Profile Picture Guard or Locked Profile enabled, it retrieves the public preview thumbnail and applies the maximum available CDN resolution upgrade.
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <p>Facebook Profile Picture Downloader &bull; Built with Node.js & Express</p>
+    </footer>
+  </div>
+
+  <div id="toast" class="toast hidden">Copied to clipboard!</div>
+
+  <script src="app.js"></script>
+</body>
+</html>
