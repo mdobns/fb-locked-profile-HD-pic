@@ -32,7 +32,7 @@ A modern, responsive web application to view and download Facebook profile pictu
 
 1. Clone or navigate to the directory:
    ```bash
-   cd "D:\Fb-private profile picture"
+   cd "fb-locked-profile-HD-pic"
    ```
 
 2. Install dependencies (already installed if using this repo):
