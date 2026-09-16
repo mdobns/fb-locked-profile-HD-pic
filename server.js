@@ -943,9 +943,14 @@ app.get('/api/debug-resolve', rateLimit, async (req, res) => {
         ['www /{u} iphone', `https://www.facebook.com/${enc}`, iPhone],
         ['www /{u} crawler', `https://www.facebook.com/${enc}`, crawler],
         ['profile.php?id={u} iphone', `https://www.facebook.com/profile.php?id=${enc}`, iPhone],
-        ['profile.php?id={u} crawler', `https://www.facebook.com/profile.php?id=${enc}`, crawler],
         ['m /{u} iphone', `https://m.facebook.com/${enc}`, iPhone],
         ['mbasic /{u} iphone', `https://mbasic.facebook.com/${enc}`, iPhone],
+        // Zero-rated / no-login endpoints (Facebook Free Basics).
+        ['0.facebook /{u} iphone', `https://0.facebook.com/${enc}`, iPhone],
+        ['0.facebook /{u} crawler', `https://0.facebook.com/${enc}`, crawler],
+        ['free.facebook /{u} iphone', `https://free.facebook.com/${enc}`, iPhone],
+        ['www /{u} googlebot', `https://www.facebook.com/${enc}`, UA_ATTEMPTS[2].userAgent],
+        ['www /{u}?locale', `https://www.facebook.com/${enc}?locale=en_US`, iPhone],
       ];
 
   for (const [label, url, ua] of forms) {
