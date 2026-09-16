@@ -868,8 +868,59 @@ app.get('/api/debug', rateLimit, async (req, res) => {
 });
 
 /**
- * API Route: Username -> numeric id resolution diagnostics.
- * Reports which URL form can resolve a vanity username from this host's IP.
+ * Follows redirects manually, capturing each hop, so we can see where a URL
+ * actually lands (and whether the final page contains a numeric id / image).
+ */
+async function followChain(startUrl, userAgent, maxHops = 3) {
+  const hops = [];
+  let url = startUrl;
+  for (let i = 0; i < maxHops; i++) {
+    let r;
+    try {
+      r = await fetch(url, {
+        redirect: 'manual',
+        headers: {
+          'User-Agent': userAgent,
+          Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch (e) {
+      hops.push({ url, error: e.message });
+      return { hops, final: null };
+    }
+    const loc = r.headers.get('location');
+    hops.push({ url, status: r.status, location: loc || null });
+    if (r.status >= 300 && r.status < 400 && loc) {
+      url = new URL(loc, url).href;
+      continue;
+    }
+    const body = await r.text().catch(() => '');
+    const uid = body.match(/"userID"\s*:\s*"(\d{6,20})"/i) || body.match(/"profile_id"\s*:\s*"(\d{6,20})"/i);
+    return {
+      hops,
+      final: {
+        url,
+        status: r.status,
+        bytes: body.length,
+        userId: uid ? uid[1] : null,
+        ogImage: (body.match(/<meta[^>]*property=["'](?:og:image|twitter:image)["'][^>]*content=["']([^"']+)["']/i) || [])[1] || null,
+        wall: /log into facebook|email or mobile number|you must log in/i.test(body),
+        notAvailable: /isn't available|may have expired/i.test(body),
+        title: (body.match(/<title>([^<]*)/i) || [])[1] || null,
+      },
+    };
+  }
+  return { hops, final: null };
+}
+
+/**
+ * API Route: Resolution diagnostics.
+ *
+ * Given a username or id, reports which URL form can actually resolve it from
+ * this host's IP, where redirects land, and whether a discovered numeric id
+ * yields a validated profile image. Used to diagnose datacenter login walls.
  */
 app.get('/api/debug-resolve', rateLimit, async (req, res) => {
   if (process.env.DEBUG_ENDPOINT === '0') {
@@ -877,72 +928,67 @@ app.get('/api/debug-resolve', rateLimit, async (req, res) => {
   }
   const parsed = parseFacebookInput(req.query.input);
   if (parsed.error) return res.status(400).json({ success: false, error: parsed.error });
+
   const target = parsed.value;
   const enc = encodeURIComponent(target);
-  const isNumeric = /^\d+$/.test(target);
+  const iPhone = UA_ATTEMPTS[0].userAgent;
+  const crawler = UA_ATTEMPTS[1].userAgent;
+  const deadline = Date.now() + 25000;
 
-  const strategies = isNumeric
-    ? [
-        ['profile.php?id=', `https://www.facebook.com/profile.php?id=${target}`],
-        ['/{id}', `https://www.facebook.com/${target}`],
-      ]
+  const out = { success: true, target, type: parsed.type, forms: [] };
+
+  const forms = /^\d+$/.test(target)
+    ? [['numeric profile.php', `https://www.facebook.com/profile.php?id=${target}`, iPhone]]
     : [
-        ['/{u}', `https://www.facebook.com/${enc}`],
-        ['profile.php?id={u}', `https://www.facebook.com/profile.php?id=${enc}`],
-        ['m./{u}', `https://m.facebook.com/${enc}`],
-        ['mbasic./{u}', `https://mbasic.facebook.com/${enc}`],
-        ['/{u}/about', `https://www.facebook.com/${enc}/about`],
-        ['graph?fields=id', `https://graph.facebook.com/${enc}?fields=id`],
-        ['graph?ids=', `https://graph.facebook.com/?ids=${enc}`],
+        ['www /{u} iphone', `https://www.facebook.com/${enc}`, iPhone],
+        ['www /{u} crawler', `https://www.facebook.com/${enc}`, crawler],
+        ['profile.php?id={u} iphone', `https://www.facebook.com/profile.php?id=${enc}`, iPhone],
+        ['profile.php?id={u} crawler', `https://www.facebook.com/profile.php?id=${enc}`, crawler],
+        ['m /{u} iphone', `https://m.facebook.com/${enc}`, iPhone],
+        ['mbasic /{u} iphone', `https://mbasic.facebook.com/${enc}`, iPhone],
       ];
 
-  const uas = [
-    ['iphone', UA_ATTEMPTS[0].userAgent],
-    ['crawler', UA_ATTEMPTS[1].userAgent],
-  ];
-
-  const results = [];
-  for (const [label, url] of strategies) {
-    for (const [uaName, ua] of uas) {
-      const entry = {
-        strategy: label,
-        ua: uaName,
-        status: null,
-        location: null,
-        redirectId: null,
-        userId: null,
-        wall: null,
-        title: null,
-        bytes: 0,
-        error: null,
-      };
-      try {
-        const r = await fetch(url, {
-          redirect: 'manual',
-          headers: { 'User-Agent': ua, Accept: 'text/html,*/*' },
-          signal: AbortSignal.timeout(12000),
-        });
-        entry.status = r.status;
-        const location = r.headers.get('location') || '';
-        entry.location = location.split('?')[0] || null;
-        const body = await r.text().catch(() => '');
-        entry.bytes = body.length;
-        entry.wall = /log into facebook|email or mobile number|you must log in/i.test(body);
-        entry.title = (body.match(/<title>([^<]*)/i) || [])[1] || null;
-        const uid =
-          body.match(/"userID"\s*:\s*"(\d{6,20})"/i) ||
-          body.match(/"profile_id"\s*:\s*"(\d{6,20})"/i);
-        entry.userId = uid ? uid[1] : null;
-        const m = location.match(/(\d{6,20})/);
-        if (m) entry.redirectId = m[1];
-      } catch (e) {
-        entry.error = e.message;
-      }
-      results.push(entry);
+  for (const [label, url, ua] of forms) {
+    if (Date.now() > deadline) {
+      out.forms.push({ label, skipped: 'time budget exhausted' });
+      continue;
     }
+    const chain = await followChain(url, ua);
+    out.forms.push({ label, ...chain });
   }
 
-  res.json({ success: true, target, type: parsed.type, results });
+  // Collect any numeric ids referenced in a redirect location or final page.
+  const ids = new Set();
+  for (const f of out.forms) {
+    if (f.final && f.final.userId) ids.add(f.final.userId);
+    for (const h of f.hops || []) {
+      const m = (h.location || '').match(/[?&]id=(\d{6,20})/);
+      if (m) ids.add(m[1]);
+    }
+  }
+  if (/^\d+$/.test(target)) ids.add(target);
+  out.discoveredIds = [...ids];
+
+  // For each discovered id, fetch the numeric profile page and validate the image.
+  out.numeric = [];
+  for (const id of out.discoveredIds.slice(0, 3)) {
+    if (Date.now() > deadline) break;
+    const chain = await followChain(`https://www.facebook.com/profile.php?id=${id}`, iPhone);
+    const og = chain.final && chain.final.ogImage;
+    let candidateHost = null;
+    let validated = false;
+    if (og) {
+      try {
+        candidateHost = new URL(og).host;
+      } catch {
+        candidateHost = 'unparseable';
+      }
+      validated = await validateImageUrl(og);
+    }
+    out.numeric.push({ id, candidateHost, validated, ...chain });
+  }
+
+  res.json(out);
 });
 
 /**
