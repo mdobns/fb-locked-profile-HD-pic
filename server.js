@@ -951,6 +951,11 @@ app.get('/api/debug-resolve', rateLimit, async (req, res) => {
         ['free.facebook /{u} iphone', `https://free.facebook.com/${enc}`, iPhone],
         ['www /{u} googlebot', `https://www.facebook.com/${enc}`, UA_ATTEMPTS[2].userAgent],
         ['www /{u}?locale', `https://www.facebook.com/${enc}?locale=en_US`, iPhone],
+        // Embeddable plugin endpoints are designed to render without login.
+        ['plugins/profile.php', `https://www.facebook.com/plugins/profile.php?href=${encodeURIComponent('https://www.facebook.com/' + target)}`, iPhone],
+        ['plugins/page.php', `https://www.facebook.com/plugins/page.php?href=${encodeURIComponent('https://www.facebook.com/' + target)}`, iPhone],
+        ['{u}?__a=1', `https://www.facebook.com/${enc}?__a=1&__d=dis`, iPhone],
+        ['web.facebook /{u}', `https://web.facebook.com/${enc}`, iPhone],
       ];
 
   for (const [label, url, ua] of forms) {
