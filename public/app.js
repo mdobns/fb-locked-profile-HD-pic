@@ -44,6 +44,30 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // Copy buttons for the "run locally" commands
+  document.querySelectorAll('.copy-cmd').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const value = btn.dataset.copy || '';
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch (err) {
+        const ta = document.createElement('textarea');
+        ta.value = value;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      const original = btn.textContent;
+      btn.textContent = 'Copied!';
+      btn.disabled = true;
+      setTimeout(() => {
+        btn.textContent = original;
+        btn.disabled = false;
+      }, 1600);
+    });
+  });
+
   // Paste from clipboard
   pasteBtn.addEventListener('click', async () => {
     try {
@@ -104,8 +128,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // When a username/link cannot be resolved from this server, offer the local
-  // resolver as the workaround (see resolve-id.js in the project root).
+  // When a username/link cannot be resolved from this server, point the user to
+  // the "Run it locally" section on the page and the resolver CLI.
   function showUsernameHelp(inputValue) {
     const content = errorBox.querySelector('.error-text-content');
     if (!content) return;
@@ -116,6 +140,15 @@ document.addEventListener('DOMContentLoaded', () => {
     cmd.textContent = 'npm run resolve-id ' + String(inputValue);
     hint.appendChild(cmd);
     hint.append(' on your own computer to get the numeric ID, then paste that numeric ID here.');
+
+    const link = document.createElement('button');
+    link.type = 'button';
+    link.className = 'resolver-link';
+    link.textContent = 'See how to run it locally ↓';
+    link.addEventListener('click', () => {
+      document.querySelector('.local-run')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    hint.appendChild(link);
     content.appendChild(hint);
   }
 

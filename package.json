@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "local": "node scripts/start-local.js",
     "test": "node --test \"test/**/*.test.js\"",
     "resolve-id": "node resolve-id.js"
   },

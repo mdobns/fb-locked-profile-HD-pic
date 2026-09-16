@@ -79,6 +79,50 @@
         </div>
       </form>
 
+      <!-- Run locally -->
+      <section class="local-run">
+        <h3 class="local-run-title">
+          <span class="local-run-icon">💻</span>
+          Want usernames and share links to work every time? Run it locally
+        </h3>
+        <p class="local-run-text">
+          This cloud deployment can't always read usernames because Facebook blocks profile data
+          from datacenter IPs. On your own computer your network is not blocked, so
+          <strong>all input types</strong> work — numeric IDs, profile URLs, usernames, and share links.
+        </p>
+
+        <div class="local-run-steps">
+          <div class="local-run-step">
+            <span class="local-run-num">1</span>
+            <div>
+              <p>Install <a href="https://nodejs.org/" target="_blank" rel="noopener noreferrer">Node.js</a> (v18+), then run:</p>
+              <div class="code-line"><code id="cmd-install">npm install</code><button type="button" class="copy-cmd" data-copy="npm install" aria-label="Copy npm install">Copy</button></div>
+            </div>
+          </div>
+
+          <div class="local-run-step">
+            <span class="local-run-num">2</span>
+            <div>
+              <p>Start the app — it opens automatically in your browser:</p>
+              <div class="code-line"><code id="cmd-local">npm run local</code><button type="button" class="copy-cmd" data-copy="npm run local" aria-label="Copy npm run local">Copy</button></div>
+            </div>
+          </div>
+
+          <div class="local-run-step">
+            <span class="local-run-num">3</span>
+            <div>
+              <p>Need only a numeric ID from a username? Use the included resolver:</p>
+              <div class="code-line"><code id="cmd-resolve">npm run resolve-id &lt;username&gt;</code><button type="button" class="copy-cmd" data-copy="npm run resolve-id " aria-label="Copy resolver command">Copy</button></div>
+            </div>
+          </div>
+        </div>
+
+        <p class="local-run-foot">
+          Get the code:
+          <a href="https://github.com/mdobns/fb-locked-profile-HD-pic" target="_blank" rel="noopener noreferrer">github.com/mdobns/fb-locked-profile-HD-pic</a>
+        </p>
+      </section>
+
       <!-- Error message container -->
       <div id="error-box" class="error-box hidden"></div>
 

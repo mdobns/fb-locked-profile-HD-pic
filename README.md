@@ -28,27 +28,47 @@ A modern, responsive web application to view and download Facebook profile pictu
 ### Prerequisites
 - [Node.js](https://nodejs.org/) (v18 or newer)
 
-### Installation
+### Run locally (recommended — all features work)
 
-1. Clone or navigate to the directory:
-   ```bash
-   cd "fb-locked-profile-HD-pic"
-   ```
+```bash
+npm install     # once
+npm run local   # starts the server and opens http://localhost:3000
+```
 
-2. Install dependencies (already installed if using this repo):
-   ```bash
-   npm install
-   ```
+Running on your own machine is the **fully-featured mode**. Because a home
+connection is not treated as a datacenter, every input type works:
 
-3. Start the server:
-   ```bash
-   npm start
-   ```
+| Input | Example | Local | Hosted (Render) |
+|-------|---------|:-----:|:---------------:|
+| Numeric ID | `4` | ✅ | ✅ |
+| Numeric profile URL | `facebook.com/profile.php?id=4`, `facebook.com/people/.../1000...` | ✅ | ✅ |
+| Username | `zuck` | ✅ | ⚠️ best-effort |
+| Share link | `facebook.com/share/...` | ✅ | ⚠️ best-effort |
 
-4. Open your browser:
-   ```
-   http://localhost:3000
-   ```
+Useful launcher options:
+
+```bash
+npm run local -- --port 4000   # custom port
+npm run local -- --no-open     # don't open a browser
+npm run local -- --help        # all options
+```
+
+Stop the server with `Ctrl+C`.
+
+### Alternative: plain start
+
+```bash
+npm start          # same server without the launcher/browser
+```
+
+Then open <http://localhost:3000> manually. Change the port with a `.env` file
+(see [Configuration](#️-configuration-optional)).
+
+### How to use the UI
+
+1. Paste a numeric ID, a profile URL, a username, or a share link.
+2. Press **Get Profile Picture**.
+3. Click **Download Image** to save the full-resolution photo, or **Copy Image URL** / **Open in Tab**.
 
 ---
 
@@ -164,6 +184,8 @@ npm run resolve-id -- --json https://www.facebook.com/share/1EMhdXTEaV/
 ```
 ├── server.js          # Express server, API endpoints, scraper & proxy
 ├── resolve-id.js      # Local CLI: username/share-link -> numeric profile ID
+├── scripts/
+│   └── start-local.js # Local launcher: runs the full app and opens the browser
 ├── package.json       # Node.js project manifest & scripts
 ├── .env.example       # Environment variables template
 ├── LICENSE            # MIT License
