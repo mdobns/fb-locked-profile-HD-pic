@@ -245,6 +245,35 @@ test('HTTP: /api/image rejects non-Facebook hosts and missing url', async () => 
   }
 });
 
+test('parseProfileHtml: filters placeholder/guard silhouettes and exposes numeric userID', () => {
+  // Personal profiles reached from a datacenter expose only the generic avatar
+  // plus a userID; the placeholder must be dropped, the id kept for Graph.
+  const html = `
+    <html><head><title>Esrat Jahan</title>
+    <meta property="og:image" content="https://lookaside.fbsbx.com/lookaside/crawler/media/?media_id=1" />
+    </head><body>
+    <script>{"userID":"61551368863513"}</script>
+    <img src="https://scontent.xx.fbcdn.net/v/t1.30497-1/84628273_176159830277856_n.png" />
+    </body></html>`;
+  const r = parseProfileHtml(html, 'esrat.jahan.379623');
+  assert.equal(r.userId, '61551368863513');
+  assert.equal(
+    r.candidates.some(u => u.includes('t1.30497-1')),
+    false,
+    'the generic silhouette must be filtered out'
+  );
+});
+
+test('parseProfileHtml: keeps a real scontent photo and exposes userID', () => {
+  const html = `
+    <meta property="og:image" content="https://scontent.xx.fbcdn.net/v/t39.30808-1/real.jpg?cstp=mx720x727&amp;ctp=p720x727" />
+    <script>{"userID":"123456789"}</script>`;
+  const r = parseProfileHtml(html, 'someone');
+  assert.equal(r.userId, '123456789');
+  assert.equal(r.candidates.length, 1);
+  assert.match(r.candidates[0], /real\.jpg/);
+});
+
 /* ------------------------------------------------------------------ */
 /* HTTP integration                                                    */
 /* ------------------------------------------------------------------ */

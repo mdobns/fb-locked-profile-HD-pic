@@ -239,6 +239,13 @@ const UA_ATTEMPTS = [
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+/**
+ * Placeholder/guard signatures Facebook serves instead of a real photo.
+ * These identify the generic silhouette and profile-picture-guard images.
+ */
+const PLACEHOLDER_RE =
+  /(?:t1\.30497-1|84628273_176159830277856|static\.xx\.fbcdn|silhouette|generic)/i;
+
 /** Builds the Facebook profile URL for an id/username/URL target. */
 function buildProfileUrl(target) {
   if (/^https?:\/\//i.test(target)) return target;
@@ -298,9 +305,20 @@ function parseProfileHtml(html, target) {
     html.match(/<title>([^<]+)<\/title>/i);
   if (titleMatch) ogTitle = titleMatch[1].replace(/\|\s*Facebook$/i, '').trim();
 
-  const normalized = [...new Set(candidates.map(u => u.replace(/&amp;/g, '&')))].sort(
-    (a, b) => rankImageCandidate(a) - rankImageCandidate(b)
-  );
+  const normalized = [...new Set(candidates.map(u => u.replace(/&amp;/g, '&')))]
+    // Drop known placeholder/guard silhouettes: for personal profiles the only
+    // inline scontent URL is the generic avatar, which is not the real photo.
+    .filter(u => !PLACEHOLDER_RE.test(u))
+    .sort((a, b) => rankImageCandidate(a) - rankImageCandidate(b));
+
+  // Facebook exposes the numeric profile id in the page even when the og:image
+  // is a lookaside URL that cannot be fetched. This is used to fall back to the
+  // Graph API, which resolves numeric ids reliably.
+  const userIdMatch =
+    html.match(/"userID"\s*:\s*"(\d{6,20})"/i) ||
+    html.match(/"profile_id"\s*:\s*"(\d{6,20})"/i) ||
+    html.match(/"entity_id"\s*:\s*"(\d{6,20})"/i);
+  const userId = userIdMatch ? userIdMatch[1] : null;
 
   // Explicit "not available" page with no candidate at all => truly gone.
   if (hasNotFoundMessage && normalized.length === 0) {
@@ -308,18 +326,19 @@ function parseProfileHtml(html, target) {
   }
 
   if (normalized.length > 0) {
-    return { candidates: normalized, name: ogTitle || null };
+    return { candidates: normalized, name: ogTitle || null, userId };
   }
 
   if (hasLoginWall) {
     return {
       blocked: true,
+      userId,
       message:
         'Facebook returned a login wall instead of the public profile. This usually happens when the app is hosted on a cloud/datacenter IP.',
     };
   }
 
-  return { candidates: [], name: ogTitle || null };
+  return { candidates: [], name: ogTitle || null, userId };
 }
 
 /**
@@ -382,6 +401,7 @@ async function curlAndExtractProfilePicture(target) {
   let sawBlocked = null;
   let sawNotFound = null;
   let fallbackName = null;
+  let discoveredUserId = null;
 
   for (const attempt of UA_ATTEMPTS) {
     try {
@@ -406,6 +426,7 @@ async function curlAndExtractProfilePicture(target) {
       if (parsed.notFound) sawNotFound = parsed;
       if (parsed.blocked) sawBlocked = parsed;
       if (!fallbackName && parsed.name) fallbackName = parsed.name;
+      if (!discoveredUserId && parsed.userId) discoveredUserId = parsed.userId;
       if (!parsed.candidates || parsed.candidates.length === 0) continue;
 
       // Validate candidates in priority order and use the first real image.
@@ -421,7 +442,8 @@ async function curlAndExtractProfilePicture(target) {
           originalResolution: upgradeInfo.origVal,
           isUpgraded: upgradeInfo.upgraded,
           name: parsed.name || fallbackName,
-          isSilhouette: candidate.includes('silhouette') || candidate.includes('static.xx.fbcdn'),
+          userId: parsed.userId || discoveredUserId,
+          isSilhouette: PLACEHOLDER_RE.test(candidate),
         };
       }
     } catch (err) {
@@ -429,10 +451,11 @@ async function curlAndExtractProfilePicture(target) {
     }
   }
 
-  // No usable image. Prefer a definitive "not found" over a login-wall report,
-  // and never claim an account was deleted based only on a login wall.
-  if (sawNotFound) return sawNotFound;
-  if (sawBlocked) return sawBlocked;
+  // No usable direct image. Still return the discovered numeric id (and name) so
+  // the caller can fall back to the Graph API, which resolves numeric ids.
+  if (sawNotFound) return { ...sawNotFound, userId: discoveredUserId, name: fallbackName };
+  if (sawBlocked) return { ...sawBlocked, userId: discoveredUserId, name: fallbackName };
+  if (discoveredUserId) return { candidates: [], userId: discoveredUserId, name: fallbackName };
   return null;
 }
 
@@ -564,21 +587,25 @@ app.post('/api/get-profile-picture', rateLimit, async (req, res) => {
 
   // Share links are opaque redirect URLs and cannot be resolved by the Graph API
   // path; they are handled by the crawler above only.
-  // The Graph API cannot resolve vanity usernames without a User token, so we
-  // only consult it for numeric IDs or when the caller supplied a token.
+  //
+  // The Graph API cannot resolve vanity usernames directly, but calling it with
+  // a *numeric* id always works. The page HTML exposes that numeric id ("userID"),
+  // even for requests served from datacenter IPs, so fall back to the Graph API
+  // using either the numeric id the caller supplied or the one we discovered.
   const hasToken = !!(customToken || process.env.FB_ACCESS_TOKEN);
-  const canUseGraphApi =
-    parsed.type !== 'share_url' && (parsed.type === 'numeric_id' || hasToken);
+  const graphTarget =
+    parsed.type === 'numeric_id' ? target : curlResult && curlResult.userId ? curlResult.userId : null;
+  const canUseGraphApi = parsed.type !== 'share_url' && (!!graphTarget || hasToken);
 
   // 2. Fallback to Graph API if the crawl didn't yield an image or returned silhouette
   if (canUseGraphApi && (!result || result.isSilhouette)) {
-    const graphResult = await fetchViaGraphApi(target, safeSize, customToken);
+    const graphResult = await fetchViaGraphApi(graphTarget || target, safeSize, customToken);
     if (graphResult && graphResult.success && !graphResult.isSilhouette) {
       result = graphResult;
     } else if (!result && graphResult && graphResult.success) {
       result = graphResult;
-    } else if (curlResult?.notFound && graphResult?.notFound) {
-      // Both strategies independently confirmed the account is gone.
+    } else if (curlResult?.notFound && graphResult?.notFound && parsed.type === 'numeric_id') {
+      // A numeric id is unambiguous, so a Graph "not found" confirms it is gone.
       return res.status(404).json({
         success: false,
         error: `Facebook account "@${target}" does not exist, has been deleted, or is deactivated.`,
@@ -586,7 +613,7 @@ app.post('/api/get-profile-picture', rateLimit, async (req, res) => {
     }
   }
 
-  // 2b. The crawler independently confirmed the account is gone (no need for Graph).
+  // 2b. The crawler independently confirmed the account is gone.
   if (!result && curlResult?.notFound) {
     return res.status(404).json({
       success: false,
