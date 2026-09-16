@@ -22,14 +22,14 @@
       </div>
       <h1 class="title">Facebook Profile Picture <span class="gradient-text">Downloader</span></h1>
       <p class="subtitle">
-        Enter any Facebook Numeric ID, username, or profile URL to view and download the full-resolution profile photo directly to your device.
+        Paste a Facebook numeric ID or a <code>profile.php?id=…</code> link to view and download the public profile photo.
       </p>
     </header>
 
     <!-- Main Card -->
     <main class="card main-card">
       <form id="fetch-form" class="fetch-form">
-        <label for="fb-input" class="input-label">Facebook Profile ID or URL</label>
+        <label for="fb-input" class="input-label">Facebook Numeric ID or Profile Link</label>
         <div class="input-group">
           <div class="input-icon">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -40,7 +40,7 @@
             type="text" 
             id="fb-input" 
             class="main-input" 
-            placeholder="e.g. 4, zuck, or https://www.facebook.com/zuck" 
+            placeholder="e.g. 4 or https://www.facebook.com/profile.php?id=4"
             autocomplete="off" 
             required 
           />
@@ -52,43 +52,17 @@
             Paste
           </button>
         </div>
+        <p id="input-guidance" class="input-guidance" aria-live="polite">
+          Most reliable on cloud hosting: a numeric ID or a <code>profile.php?id=…</code> link.
+        </p>
 
-        <!-- Options row -->
+        <!-- Quick test -->
         <div class="options-row">
-          <div class="option-field">
-            <label for="size-select">Preferred Quality:</label>
-            <select id="size-select" class="select-dropdown">
-              <option value="large" selected>HD / Large (Recommended)</option>
-              <option value="normal">Normal (320px)</option>
-              <option value="small">Small (160px)</option>
-              <option value="square">Square Crop</option>
-            </select>
-          </div>
-
           <div class="quick-samples">
             <span class="sample-label">Try test:</span>
             <button type="button" class="sample-chip" data-sample="4">ID: 4 (Zuck)</button>
-            <button type="button" class="sample-chip" data-sample="zuck">Username: zuck</button>
           </div>
         </div>
-
-        <!-- Optional Access Token Accordion -->
-        <details class="advanced-details">
-          <summary class="advanced-summary">
-            <span>⚙️ Advanced Settings (Optional Access Token)</span>
-          </summary>
-          <div class="advanced-body">
-            <p class="advanced-hint">
-              If you have a Facebook Developer App Access Token, you can paste it here to authenticate directly with Meta's Graph API for higher rate limits.
-            </p>
-            <input 
-              type="text" 
-              id="custom-token" 
-              class="token-input" 
-              placeholder="Paste Meta Graph API Access Token (Optional)" 
-            />
-          </div>
-        </details>
 
         <!-- Submit Button -->
         <button type="submit" id="submit-btn" class="primary-btn">
@@ -100,7 +74,7 @@
         <div class="warning-banner">
           <span class="warning-icon">⚠️</span>
           <div class="warning-text">
-            <strong>Important Warning:</strong> This tool will work for <strong>publicly available profiles</strong> and <strong>publicly available locked profiles only</strong>. Profiles that are completely private or hidden from public view cannot be retrieved.
+            <strong>Important:</strong> Usernames such as <code>zuck</code> are best-effort only on cloud hosts because Facebook can hide profile data from datacenter IPs. Use a numeric ID when possible. Only publicly available photos can be retrieved.
           </div>
         </div>
       </form>
@@ -177,8 +151,8 @@
         <div class="guide-item">
           <div class="guide-step">2</div>
           <div class="guide-content">
-            <h4>From Custom Username</h4>
-            <p>If the URL has a name like <code>facebook.com/zuck</code>, you can simply paste <code>zuck</code> directly into the search bar above.</p>
+            <h4>From Share Link</h4>
+            <p>Paste a link such as <code>facebook.com/share/...</code> directly into the search bar. Share links are best-effort and may expire or be restricted by Facebook.</p>
           </div>
         </div>
 

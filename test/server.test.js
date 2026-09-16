@@ -8,7 +8,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { app, parseFacebookInput, upgradeToMaxResolution, rateLimit, parseProfileHtml, buildProfileUrl, rankImageCandidate } = require('../server.js');
+const { app, parseFacebookInput, upgradeToMaxResolution, rateLimit, parseProfileHtml, buildProfileUrl, rankImageCandidate, resolveProfileLocally, discoverNumericId } = require('../server.js');
 
 /* ------------------------------------------------------------------ */
 /* parseFacebookInput                                                  */
@@ -272,6 +272,38 @@ test('parseProfileHtml: keeps a real scontent photo and exposes userID', () => {
   assert.equal(r.userId, '123456789');
   assert.equal(r.candidates.length, 1);
   assert.match(r.candidates[0], /real\.jpg/);
+});
+
+/* ------------------------------------------------------------------ */
+/* Local numeric-id resolver                                           */
+/* ------------------------------------------------------------------ */
+
+test('discoverNumericId: a numeric id is returned unchanged (no network)', async () => {
+  assert.equal(await discoverNumericId('4'), '4');
+  assert.equal(await discoverNumericId('100001234567890'), '100001234567890');
+});
+
+test('resolveProfileLocally: surfaces parser errors without network calls', async () => {
+  const empty = await resolveProfileLocally('   ');
+  assert.equal(empty.success, false);
+  assert.match(empty.error, /empty/i);
+
+  const bad = await resolveProfileLocally('https://evil.com/x');
+  assert.equal(bad.success, false);
+  assert.match(bad.error, /not a recognized Facebook domain/i);
+
+  const spaced = await resolveProfileLocally('has space');
+  assert.equal(spaced.success, false);
+  assert.match(spaced.error, /invalid format/i);
+});
+
+test('resolveProfileLocally: result shape is stable for valid input', async () => {
+  // Uses the network; assert only on the contract, not on live Facebook data.
+  const r = await resolveProfileLocally('4');
+  assert.equal(typeof r.success, 'boolean');
+  assert.equal(r.input, '4');
+  assert.ok('numericId' in r);
+  assert.ok('imageUrl' in r);
 });
 
 /* ------------------------------------------------------------------ */

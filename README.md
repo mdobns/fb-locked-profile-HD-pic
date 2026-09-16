@@ -6,12 +6,12 @@ A modern, responsive web application to view and download Facebook profile pictu
 
 ## ✨ Features
 
-- **Multi-Format Input Support**:
+- **Cloud-reliable input formats**:
   - Direct Numeric User ID (e.g. `4`, `100001234567890`)
-  - Vanity Username (e.g. `zuck`, `mark.zuckerberg`)
-  - Full Facebook Profile URL (e.g. `https://www.facebook.com/zuck`, `https://m.facebook.com/profile.php?id=...`, `https://facebook.com/people/.../1000...`)
+  - Numeric Profile URL (e.g. `https://www.facebook.com/profile.php?id=...`, `https://facebook.com/people/.../1000...`)
+  - Vanity usernames and share links are accepted as best-effort inputs only.
 - **Multi-Strategy Resolution Engine**:
-  - **Meta Graph API**: Direct picture endpoint queries with optional Access Token support.
+  - **Numeric-ID fallback**: Direct picture lookup when Facebook exposes or receives a numeric ID.
   - **Open Graph Metadata**: Automated Open Graph (`og:image`, `og:title`) extraction via web crawler agents.
   - **Mobile Web Parser**: Fallback scraper for mobile endpoints.
   - **Direct Graph Link**: Ultimate CDN redirect fallback.
@@ -54,7 +54,7 @@ A modern, responsive web application to view and download Facebook profile pictu
 
 ## ⚙️ Configuration (Optional)
 
-You can customize port and Facebook API credentials by creating a `.env` file:
+You can customize the port by creating a `.env` file:
 ```bash
 cp .env.example .env
 ```
@@ -62,8 +62,6 @@ cp .env.example .env
 Contents of `.env`:
 ```env
 PORT=3000
-# Optional: App Access Token or User Access Token from https://developers.facebook.com/
-FB_ACCESS_TOKEN=your_token_here
 ```
 
 ---
@@ -96,20 +94,48 @@ the `cstp=mx` HD hint).
 4. Reporting a clear **`503 login_wall`** (not a misleading "account deleted")
    when Facebook blocks the request.
 
-### Recommended: set an access token
+### What works reliably without credentials
 
-The single most reliable fix on a datacenter host is to supply a Graph API token:
+Use a numeric profile ID or a link containing `profile.php?id=NUMBER`. Facebook
+can serve a login page or incomplete HTML to cloud/datacenter IPs, so a vanity
+username such as `zuck` cannot be reliably converted to a numeric ID by a
+Render deployment. Usernames and share links are attempted, but should be
+treated as best-effort only.
 
-```env
-FB_ACCESS_TOKEN=your_app_or_user_access_token
+### 🔑 Username → numeric ID (run this on your own computer)
+
+If you only have a username or a `facebook.com/share/...` link, run the included
+resolver **on your local machine**. Your home connection is not blocked the way a
+cloud host is, so it can usually read the profile page and reveal the numeric ID.
+That numeric ID then works reliably in the hosted app.
+
+```bash
+# 1. On your computer, inside the project folder:
+npm install          # once
+npm run resolve-id zuck
+
+# Example output:
+#   Name       : Mark Zuckerberg
+#   Numeric ID : 4
+#
+#   Use this in the hosted app:
+#     4
+#     https://www.facebook.com/profile.php?id=4
+
+# 2. Paste that numeric ID (or the profile.php?id=... link) into the hosted app.
 ```
 
-On Render: **Dashboard → your service → Environment → Add Environment Variable**,
-key `FB_ACCESS_TOKEN`. Note that the Graph API only resolves **numeric IDs**
-without a User token — vanity usernames still rely on the crawler strategy.
+Accepts usernames, profile URLs, share links, or numeric IDs, and multiple
+values at once:
 
-> The server also accepts a per-request token from the UI's **Advanced Settings**
-> field (sent as `customToken`), useful for testing.
+```bash
+npm run resolve-id zuck https://www.facebook.com/esrat.jahan.379623
+npm run resolve-id -- --json https://www.facebook.com/share/1EMhdXTEaV/
+```
+
+> Use a plain home/office connection. VPNs, proxies, and cloud servers are the
+> exact situations Facebook blocks. If you see "received a login wall", try a
+> different network.
 
 ---
 
@@ -137,6 +163,7 @@ without a User token — vanity usernames still rely on the crawler strategy.
 
 ```
 ├── server.js          # Express server, API endpoints, scraper & proxy
+├── resolve-id.js      # Local CLI: username/share-link -> numeric profile ID
 ├── package.json       # Node.js project manifest & scripts
 ├── .env.example       # Environment variables template
 ├── LICENSE            # MIT License

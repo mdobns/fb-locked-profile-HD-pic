@@ -634,12 +634,12 @@ app.post('/api/get-profile-picture', rateLimit, async (req, res) => {
       success: false,
       error: blocked
         ? `Facebook served a login wall instead of "@${target}". This typically happens when the app runs on a cloud/datacenter IP (e.g. Render). ` +
-          'Set FB_ACCESS_TOKEN in the environment, or try a numeric profile ID, and try again.'
+          'Please use the numeric profile ID or a profile.php?id=… link instead.'
         : `Could not find a Facebook profile or extract a profile picture for "${target}". ` +
           'Please check that the account exists and is publicly accessible.',
       reason: blocked ? 'login_wall' : 'not_found',
       hint: blocked
-        ? 'Datacenter IPs are frequently blocked by Facebook. A Graph API access token is the reliable fix.'
+        ? 'Usernames are best-effort on cloud hosts because Facebook can withhold the username-to-ID mapping.'
         : undefined,
     });
   }
@@ -664,8 +664,11 @@ app.post('/api/get-profile-picture', rateLimit, async (req, res) => {
     name: result.name || null,
     method: result.method,
     isSilhouette: !!result.isSilhouette,
+    // The numeric id behind this input, when it could be determined. Useful for
+    // turning a username into a form that works on cloud hosts.
+    resolvedId: result.userId || curlResult?.userId || (parsed.type === 'numeric_id' ? target : null),
     info: result.isSilhouette
-      ? 'A placeholder silhouette was returned by Facebook. The profile may have strict privacy controls, Profile Picture Guard, or require a Graph API Access Token.'
+      ? 'A placeholder silhouette was returned by Facebook. The profile may have strict privacy controls or Profile Picture Guard.'
       : 'Profile picture retrieved successfully.',
   });
 });
@@ -754,13 +757,11 @@ app.get('/api/health', (req, res) => {
  * API Route: Diagnostics.
  *
  * Reports exactly what this host sees when fetching a Facebook profile, per
- * user-agent. Enable with DEBUG_ENDPOINT=1 (or when NODE_ENV !== 'production')
- * so production deployments do not expose it unintentionally.
+ * user-agent. Enable only with DEBUG_ENDPOINT=1; it is disabled by default.
  */
 app.get('/api/debug', rateLimit, async (req, res) => {
-  // Enabled by default so it can be used right after a deploy; set
-  // DEBUG_ENDPOINT=0 to disable, or DEBUG_TOKEN to require a secret.
-  const debugEnabled = process.env.DEBUG_ENDPOINT !== '0';
+  // Diagnostics may expose external request details; opt in explicitly.
+  const debugEnabled = process.env.DEBUG_ENDPOINT === '1';
   const { input, token } = req.query;
   const tokenOk = !process.env.DEBUG_TOKEN || token === process.env.DEBUG_TOKEN;
   if (!debugEnabled || !tokenOk) {
@@ -927,7 +928,7 @@ async function followChain(startUrl, userAgent, maxHops = 3) {
  * yields a validated profile image. Used to diagnose datacenter login walls.
  */
 app.get('/api/debug-resolve', rateLimit, async (req, res) => {
-  if (process.env.DEBUG_ENDPOINT === '0') {
+  if (process.env.DEBUG_ENDPOINT !== '1') {
     return res.status(404).json({ success: false, error: 'Not found.' });
   }
   const parsed = parseFacebookInput(req.query.input);
@@ -1070,6 +1071,52 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, error: 'Internal server error.' });
 });
 
+/**
+ * Attempts to discover the numeric profile id behind a username, share link, or
+ * numeric id.
+ *
+ * Facebook embeds `"userID":"<digits>"` in the page it serves to link-preview
+ * crawlers, but that markup is only present when Facebook actually serves the
+ * public page (i.e. from a residential IP, not a datacenter).
+ */
+async function discoverNumericId(target) {
+  if (/^\d+$/.test(target)) return target;
+
+  const profileUrl = buildProfileUrl(target);
+  const attempts = [
+    { url: profileUrl, userAgent: UA_ATTEMPTS[1].userAgent },
+    { url: profileUrl, userAgent: UA_ATTEMPTS[2].userAgent },
+    { url: profileUrl, userAgent: UA_ATTEMPTS[0].userAgent },
+    { url: `https://mbasic.facebook.com/${encodeURIComponent(target)}`, userAgent: UA_ATTEMPTS[1].userAgent },
+    { url: `https://m.facebook.com/${encodeURIComponent(target)}`, userAgent: UA_ATTEMPTS[1].userAgent },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const res = await fetch(attempt.url, {
+        redirect: 'follow',
+        headers: {
+          'User-Agent': attempt.userAgent,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!res.ok) continue;
+      const html = await res.text();
+      const match =
+        html.match(/"userID"\s*:\s*"(\d{6,20})"/i) ||
+        html.match(/"profile_id"\s*:\s*"(\d{6,20})"/i) ||
+        html.match(/"entity_id"\s*:\s*"(\d{6,20})"/i);
+      if (match) return match[1];
+    } catch (err) {
+      // try the next strategy
+    }
+  }
+
+  return null;
+}
+
 module.exports = {
   app,
   parseFacebookInput,
@@ -1079,7 +1126,71 @@ module.exports = {
   buildProfileUrl,
   rankImageCandidate,
   validateImageUrl,
+  resolveProfileLocally,
+  discoverNumericId,
 };
+
+/**
+ * Resolves a username / share link / numeric id to a numeric profile id and
+ * image URL using this machine's network IP.
+ *
+ * Intended to be run from a normal (residential) machine: Facebook serves the
+ * public profile page there, so a username can be converted into a numeric id
+ * that also works from cloud hosts such as Render.
+ */
+async function resolveProfileLocally(input) {
+  const parsed = parseFacebookInput(input);
+  if (parsed.error) return { success: false, error: parsed.error };
+
+  const target = parsed.value;
+  const curlResult = await curlAndExtractProfilePicture(target);
+
+  if (curlResult && curlResult.success) {
+    // The mobile-UA page that yields the image often omits the numeric id, so
+    // discover it separately when it is not already present.
+    let numericId = curlResult.userId || (parsed.type === 'numeric_id' ? target : null);
+    if (!numericId) {
+      numericId = await discoverNumericId(target);
+    }
+
+    return {
+      success: true,
+      input,
+      target,
+      targetType: parsed.type,
+      name: curlResult.name || null,
+      numericId,
+      imageUrl: curlResult.imageUrl || null,
+      method: curlResult.method || null,
+      mxResolution: curlResult.mxResolution || null,
+      isSilhouette: !!curlResult.isSilhouette,
+    };
+  }
+
+  if (curlResult && curlResult.userId) {
+    return {
+      success: true,
+      input,
+      target,
+      targetType: parsed.type,
+      name: curlResult.name || null,
+      numericId: curlResult.userId,
+      imageUrl: null,
+      method: null,
+      note: 'Numeric id found, but no image URL could be verified locally.',
+    };
+  }
+
+  return {
+    success: false,
+    input,
+    target,
+    targetType: parsed.type,
+    error: curlResult && curlResult.blocked
+      ? 'This network IP received a login wall from Facebook. Run the resolver from a normal residential connection.'
+      : 'Could not resolve a profile for this input.',
+  };
+}
 
 if (require.main === module) {
   app.listen(PORT, () => {

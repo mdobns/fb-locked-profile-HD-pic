@@ -1,8 +1,6 @@
 document.addEventListener('DOMContentLoaded', () => {
   const form = document.getElementById('fetch-form');
   const input = document.getElementById('fb-input');
-  const sizeSelect = document.getElementById('size-select');
-  const customTokenInput = document.getElementById('custom-token');
   const submitBtn = document.getElementById('submit-btn');
   const btnText = submitBtn.querySelector('.btn-text');
   const btnSpinner = submitBtn.querySelector('.btn-spinner');
@@ -21,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const copyLinkBtn = document.getElementById('copy-link-btn');
   const openLinkBtn = document.getElementById('open-link-btn');
   const toast = document.getElementById('toast');
+  const inputGuidance = document.getElementById('input-guidance');
 
   let currentImageUrl = '';
   let currentProxyUrl = '';
@@ -32,6 +31,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Clear errors when user types
   input.addEventListener('input', () => {
     hideError();
+    updateInputGuidance(input.value);
   });
 
   // Quick sample chips
@@ -40,6 +40,7 @@ document.addEventListener('DOMContentLoaded', () => {
       input.value = chip.dataset.sample;
       input.focus();
       hideError();
+      updateInputGuidance(input.value);
     });
   });
 
@@ -51,6 +52,7 @@ document.addEventListener('DOMContentLoaded', () => {
         input.value = text.trim();
         input.focus();
         hideError();
+        updateInputGuidance(input.value);
         showToast('Pasted from clipboard!');
       }
     } catch (err) {
@@ -79,25 +81,43 @@ document.addEventListener('DOMContentLoaded', () => {
         },
         body: JSON.stringify({
           input: query,
-          size: sizeSelect.value,
-          customToken: customTokenInput.value.trim() || undefined,
         }),
       });
 
       const data = await response.json();
 
       if (!response.ok || !data.success) {
-        throw new Error(data.error || 'Failed to retrieve Facebook profile picture.');
+        const error = new Error(data.error || 'Failed to retrieve Facebook profile picture.');
+        error.reason = data.reason;
+        throw error;
       }
 
       displayResult(data);
     } catch (err) {
       console.error(err);
       showError(err.message || 'An unexpected error occurred while fetching the profile picture.');
+      if (err.reason === 'login_wall') {
+        showUsernameHelp(query);
+      }
     } finally {
       setLoading(false);
     }
   });
+
+  // When a username/link cannot be resolved from this server, offer the local
+  // resolver as the workaround (see resolve-id.js in the project root).
+  function showUsernameHelp(inputValue) {
+    const content = errorBox.querySelector('.error-text-content');
+    if (!content) return;
+    const hint = document.createElement('div');
+    hint.className = 'resolver-hint';
+    hint.append('Tip: run ');
+    const cmd = document.createElement('code');
+    cmd.textContent = 'npm run resolve-id ' + String(inputValue);
+    hint.appendChild(cmd);
+    hint.append(' on your own computer to get the numeric ID, then paste that numeric ID here.');
+    content.appendChild(hint);
+  }
 
   // Copy the stable server proxy URL (the direct FB CDN URL expires and is hotlink-protected).
   copyLinkBtn.addEventListener('click', async () => {
@@ -210,6 +230,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function hideResult() {
     resultBox.classList.add('hidden');
+  }
+
+  function updateInputGuidance(value) {
+    const query = String(value || '').trim();
+    if (!query) {
+      inputGuidance.innerHTML = 'Most reliable on cloud hosting: a numeric ID or a <code>profile.php?id=…</code> link.';
+      inputGuidance.classList.remove('is-warning');
+      return;
+    }
+
+    const isNumeric = /^\d+$/.test(query);
+    const isNumericProfileUrl = /(?:[?&]id=\d+|\/people\/[^/]+\/\d+)/i.test(query);
+    const isShareUrl = /facebook\.com\/share\//i.test(query);
+    if (isNumeric || isNumericProfileUrl) {
+      inputGuidance.textContent = 'Reliable format detected: the numeric profile ID is included in this input.';
+      inputGuidance.classList.remove('is-warning');
+    } else if (isShareUrl) {
+      inputGuidance.textContent = 'Share links may work, but Facebook can expire or restrict them.';
+      inputGuidance.classList.add('is-warning');
+    } else {
+      inputGuidance.textContent = 'Username detected: Facebook may block username resolution from cloud/datacenter servers. A numeric ID is more reliable.';
+      inputGuidance.classList.add('is-warning');
+    }
   }
 
   function showToast(msg) {
