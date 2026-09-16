@@ -648,6 +648,39 @@ body {
   color: var(--text-muted);
 }
 
+.footer-identity {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 0.78rem;
+}
+
+.footer-identity a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.footer-identity a:hover,
+.footer-identity a:focus-visible {
+  color: #93C5FD;
+}
+
+.github-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.footer-divider {
+  color: rgba(156, 163, 175, 0.5);
+}
+
 /* Toast */
 .toast {
   position: fixed;
