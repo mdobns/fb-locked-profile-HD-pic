@@ -733,9 +733,138 @@ app.get('/api/download', rateLimit, async (req, res) => {
   }
 });
 
-// Health check
+// Health check (also reports the deployed commit so we can confirm what is live)
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    time: new Date().toISOString(),
+    commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || 'unknown',
+    branch: process.env.RENDER_GIT_BRANCH || null,
+    service: process.env.RENDER_SERVICE_NAME || null,
+    node: process.version,
+    hasAccessToken: !!process.env.FB_ACCESS_TOKEN,
+  });
+});
+
+/**
+ * API Route: Diagnostics.
+ *
+ * Reports exactly what this host sees when fetching a Facebook profile, per
+ * user-agent. Enable with DEBUG_ENDPOINT=1 (or when NODE_ENV !== 'production')
+ * so production deployments do not expose it unintentionally.
+ */
+app.get('/api/debug', rateLimit, async (req, res) => {
+  // Enabled by default so it can be used right after a deploy; set
+  // DEBUG_ENDPOINT=0 to disable, or DEBUG_TOKEN to require a secret.
+  const debugEnabled = process.env.DEBUG_ENDPOINT !== '0';
+  const { input, token } = req.query;
+  const tokenOk = !process.env.DEBUG_TOKEN || token === process.env.DEBUG_TOKEN;
+  if (!debugEnabled || !tokenOk) {
+    return res.status(404).json({ success: false, error: 'Not found.' });
+  }
+
+  const parsed = parseFacebookInput(input);
+  if (parsed.error) {
+    return res.status(400).json({ success: false, error: parsed.error });
+  }
+  const target = parsed.value;
+  const profileUrl = buildProfileUrl(target);
+
+  const report = {
+    host: req.hostname,
+    node: process.version,
+    egressIp: null,
+    env: {
+      hasAccessToken: !!(process.env.FB_ACCESS_TOKEN),
+      debugEnabled,
+    },
+    target,
+    targetType: parsed.type,
+    profileUrl,
+    userAgents: [],
+    graph: null,
+    resolved: null,
+  };
+
+  // Egress IP as Facebook would see it.
+  try {
+    const ipRes = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(8000) });
+    report.egressIp = (await ipRes.json()).ip;
+  } catch (err) {
+    report.egressIp = `unavailable: ${err.message}`;
+  }
+
+  for (const attempt of UA_ATTEMPTS) {
+    const entry = { label: attempt.method, status: null, contentType: null, bytes: 0, title: null, ogImage: null, flags: {}, userId: null, error: null };
+    try {
+      const r = await fetch(profileUrl, {
+        redirect: 'follow',
+        headers: {
+          'User-Agent': attempt.userAgent,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        signal: AbortSignal.timeout(12000),
+      });
+      entry.status = r.status;
+      entry.contentType = (r.headers.get('content-type') || '').split(';')[0];
+      entry.finalUrl = r.url;
+      const html = await r.text();
+      entry.bytes = html.length;
+      const parsedHtml = parseProfileHtml(html, target);
+      entry.title = (html.match(/<title>([^<]*)/i) || [])[1] || null;
+      entry.userId = parsedHtml.userId || null;
+      entry.candidates = (parsedHtml.candidates || []).slice(0, 3).map(u => u.slice(0, 120));
+      entry.flags = {
+        loginWall: /log into facebook|email or mobile number/i.test(html),
+        notAvailable: /this content isn't available|this page isn't available|may have expired/i.test(html),
+        blocked: !!parsedHtml.blocked,
+        notFound: !!parsedHtml.notFound,
+      };
+    } catch (err) {
+      entry.error = err.message;
+    }
+    report.userAgents.push(entry);
+  }
+
+  // Graph API result for the resolved target (numeric id when available).
+  try {
+    const graphId = parsed.type === 'numeric_id' ? target : (report.userAgents.find(u => u.userId) || {}).userId;
+    const gUrl = `https://graph.facebook.com/${encodeURIComponent(graphId || target)}/picture?type=large&redirect=false` +
+      (process.env.FB_ACCESS_TOKEN ? `&access_token=${encodeURIComponent(process.env.FB_ACCESS_TOKEN)}` : '');
+    const g = await fetch(gUrl, { signal: AbortSignal.timeout(10000) });
+    const body = await g.text();
+    let parsedBody;
+    try { parsedBody = JSON.parse(body); } catch { parsedBody = { raw: body.slice(0, 200) }; }
+    report.graph = {
+      usedId: graphId || null,
+      status: g.status,
+      isSilhouette: parsedBody?.data?.is_silhouette ?? null,
+      url: parsedBody?.data?.url ? parsedBody.data.url.slice(0, 160) : null,
+      error: parsedBody?.error ? { code: parsedBody.error.code, message: String(parsedBody.error.message).slice(0, 200) } : null,
+    };
+  } catch (err) {
+    report.graph = { error: err.message };
+  }
+
+  // What the real pipeline resolves to.
+  try {
+    const curlResult = await curlAndExtractProfilePicture(target);
+    report.resolved = curlResult
+      ? {
+          success: !!curlResult.success,
+          notFound: !!curlResult.notFound,
+          blocked: !!curlResult.blocked,
+          userId: curlResult.userId || null,
+          method: curlResult.method || null,
+          imageUrl: curlResult.imageUrl ? curlResult.imageUrl.slice(0, 160) : null,
+        }
+      : null;
+  } catch (err) {
+    report.resolved = { error: err.message };
+  }
+
+  res.json({ success: true, report });
 });
 
 /**
