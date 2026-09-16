@@ -868,6 +868,84 @@ app.get('/api/debug', rateLimit, async (req, res) => {
 });
 
 /**
+ * API Route: Username -> numeric id resolution diagnostics.
+ * Reports which URL form can resolve a vanity username from this host's IP.
+ */
+app.get('/api/debug-resolve', rateLimit, async (req, res) => {
+  if (process.env.DEBUG_ENDPOINT === '0') {
+    return res.status(404).json({ success: false, error: 'Not found.' });
+  }
+  const parsed = parseFacebookInput(req.query.input);
+  if (parsed.error) return res.status(400).json({ success: false, error: parsed.error });
+  const target = parsed.value;
+  const enc = encodeURIComponent(target);
+  const isNumeric = /^\d+$/.test(target);
+
+  const strategies = isNumeric
+    ? [
+        ['profile.php?id=', `https://www.facebook.com/profile.php?id=${target}`],
+        ['/{id}', `https://www.facebook.com/${target}`],
+      ]
+    : [
+        ['/{u}', `https://www.facebook.com/${enc}`],
+        ['profile.php?id={u}', `https://www.facebook.com/profile.php?id=${enc}`],
+        ['m./{u}', `https://m.facebook.com/${enc}`],
+        ['mbasic./{u}', `https://mbasic.facebook.com/${enc}`],
+        ['/{u}/about', `https://www.facebook.com/${enc}/about`],
+        ['graph?fields=id', `https://graph.facebook.com/${enc}?fields=id`],
+        ['graph?ids=', `https://graph.facebook.com/?ids=${enc}`],
+      ];
+
+  const uas = [
+    ['iphone', UA_ATTEMPTS[0].userAgent],
+    ['crawler', UA_ATTEMPTS[1].userAgent],
+  ];
+
+  const results = [];
+  for (const [label, url] of strategies) {
+    for (const [uaName, ua] of uas) {
+      const entry = {
+        strategy: label,
+        ua: uaName,
+        status: null,
+        location: null,
+        redirectId: null,
+        userId: null,
+        wall: null,
+        title: null,
+        bytes: 0,
+        error: null,
+      };
+      try {
+        const r = await fetch(url, {
+          redirect: 'manual',
+          headers: { 'User-Agent': ua, Accept: 'text/html,*/*' },
+          signal: AbortSignal.timeout(12000),
+        });
+        entry.status = r.status;
+        const location = r.headers.get('location') || '';
+        entry.location = location.split('?')[0] || null;
+        const body = await r.text().catch(() => '');
+        entry.bytes = body.length;
+        entry.wall = /log into facebook|email or mobile number|you must log in/i.test(body);
+        entry.title = (body.match(/<title>([^<]*)/i) || [])[1] || null;
+        const uid =
+          body.match(/"userID"\s*:\s*"(\d{6,20})"/i) ||
+          body.match(/"profile_id"\s*:\s*"(\d{6,20})"/i);
+        entry.userId = uid ? uid[1] : null;
+        const m = location.match(/(\d{6,20})/);
+        if (m) entry.redirectId = m[1];
+      } catch (e) {
+        entry.error = e.message;
+      }
+      results.push(entry);
+    }
+  }
+
+  res.json({ success: true, target, type: parsed.type, results });
+});
+
+/**
  * API Route: Inline image proxy.
  *
  * Used for the <img> preview and "Open in Tab". Lookaside URLs are not directly
