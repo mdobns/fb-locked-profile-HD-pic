@@ -1,15 +1,18 @@
 {
-  "name": "fb-private-profile-picture",
+  "name": "fb-locked-profile-hd-pic",
   "version": "1.0.0",
-  "description": "",
+  "description": "View and download Facebook profile pictures in HD from an ID, username, or profile URL.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=18"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Md Oshama Bin Nur",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1"

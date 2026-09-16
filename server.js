@@ -1,10 +1,12 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const { Readable } = require('stream');
 
 // Load environment variables natively if .env exists
-if (fs.existsSync('.env')) {
-  fs.readFileSync('.env', 'utf-8')
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  fs.readFileSync(envPath, 'utf-8')
     .split('\n')
     .forEach(line => {
       const trimmed = line.trim();
@@ -19,6 +21,49 @@ if (fs.existsSync('.env')) {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+app.disable('x-powered-by');
+
+// Security headers (CSP allows self + Google Fonts; images may come from the FB CDN)
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+      "font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self'; " +
+      "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+  );
+  next();
+});
+
+// Simple in-memory sliding-window rate limiter (per client IP).
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX = 30;
+const rateBuckets = new Map();
+function rateLimit(req, res, next) {
+  const now = Date.now();
+  const key = req.ip || req.socket.remoteAddress || 'unknown';
+  const recent = (rateBuckets.get(key) || []).filter(ts => now - ts < RATE_LIMIT_WINDOW_MS);
+  if (recent.length >= RATE_LIMIT_MAX) {
+    res.setHeader('Retry-After', Math.ceil((RATE_LIMIT_WINDOW_MS - (now - recent[0])) / 1000));
+    return res.status(429).json({ success: false, error: 'Too many requests. Please slow down and try again shortly.' });
+  }
+  recent.push(now);
+  rateBuckets.set(key, recent);
+  next();
+}
+
+// Periodically evict idle buckets so the map cannot grow without bound.
+const rateLimitSweeper = setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamps] of rateBuckets) {
+    const recent = timestamps.filter(ts => now - ts < RATE_LIMIT_WINDOW_MS);
+    if (recent.length === 0) rateBuckets.delete(key);
+    else rateBuckets.set(key, recent);
+  }
+}, RATE_LIMIT_WINDOW_MS);
+rateLimitSweeper.unref?.();
 
 // Middleware
 app.use((req, res, next) => {
@@ -50,8 +95,10 @@ function parseFacebookInput(input) {
     return { type: 'numeric_id', value: cleanInput };
   }
 
-  // 2. Check if input looks like a URL
-  if (/^https?:\/\/|www\.|\.com|\.net|\.org|\.me/i.test(cleanInput) || cleanInput.includes('/')) {
+  // 2. Check if input looks like a URL. Only protocol-prefixed, www-prefixed,
+  // or slash-containing inputs are treated as URLs so that dotted usernames
+  // (e.g. "john.me", "foo.net") are not misclassified as domains.
+  if (/^https?:\/\//i.test(cleanInput) || /^www\./i.test(cleanInput) || cleanInput.includes('/')) {
     try {
       let urlString = cleanInput;
       if (!/^https?:\/\//i.test(urlString)) {
@@ -144,7 +191,9 @@ function upgradeToMaxResolution(cdnUrl) {
   const mxMatch = cdnUrl.match(/[?&]cstp=mx([^&]+)/i);
   const ctpMatch = cdnUrl.match(/[?&]ctp=([a-z]?)([^&]+)/i);
 
-  if (mxMatch && mxMatch[1] && ctpMatch) {
+  // Only accept a dimension-like mx token (e.g. "720x727") to avoid copying
+  // arbitrary/attacker-controlled characters into URLs returned to the client.
+  if (mxMatch && mxMatch[1] && /^[0-9a-z]+$/i.test(mxMatch[1]) && ctpMatch) {
     const mxVal = mxMatch[1]; // e.g. "720x727"
     const prefix = ctpMatch[1] || 'p'; // "p" or "s"
     const origVal = ctpMatch[2]; // e.g. "240x240"
@@ -278,7 +327,7 @@ async function curlAndExtractProfilePicture(target) {
  */
 async function fetchViaGraphApi(idOrUsername, type = 'large', accessToken = null) {
   const token = accessToken || process.env.FB_ACCESS_TOKEN || '';
-  let apiUrl = `https://graph.facebook.com/${encodeURIComponent(idOrUsername)}/picture?type=${type}&redirect=false`;
+  let apiUrl = `https://graph.facebook.com/${encodeURIComponent(idOrUsername)}/picture?type=${encodeURIComponent(type)}&redirect=false`;
   if (token) {
     apiUrl += `&access_token=${encodeURIComponent(token)}`;
   }
@@ -317,7 +366,7 @@ async function fetchViaGraphApi(idOrUsername, type = 'large', accessToken = null
 
   // Follow redirect directly
   try {
-    let redirectUrl = `https://graph.facebook.com/${encodeURIComponent(idOrUsername)}/picture?type=${type}`;
+    let redirectUrl = `https://graph.facebook.com/${encodeURIComponent(idOrUsername)}/picture?type=${encodeURIComponent(type)}`;
     if (token) {
       redirectUrl += `&access_token=${encodeURIComponent(token)}`;
     }
@@ -353,8 +402,11 @@ async function fetchViaGraphApi(idOrUsername, type = 'large', accessToken = null
 /**
  * API Route: Get Profile Picture
  */
-app.post('/api/get-profile-picture', async (req, res) => {
-  const { input, size = 'large', customToken } = req.body;
+const ALLOWED_SIZES = ['large', 'normal', 'small', 'square'];
+
+app.post('/api/get-profile-picture', rateLimit, async (req, res) => {
+  const { input, size = 'large', customToken } = req.body || {};
+  const safeSize = ALLOWED_SIZES.includes(size) ? size : 'large';
 
   const parsed = parseFacebookInput(input);
   if (parsed.error) {
@@ -394,9 +446,13 @@ app.post('/api/get-profile-picture', async (req, res) => {
     result = curlResult;
   }
 
+  // Share links are opaque redirect URLs and cannot be resolved by the Graph API
+  // path; they are handled by the crawler above only.
+  const canUseGraphApi = parsed.type !== 'share_url';
+
   // 2. Fallback to Graph API if curl didn't find image or returned silhouette
-  if (!result || result.isSilhouette) {
-    const graphResult = await fetchViaGraphApi(target, size, customToken);
+  if (canUseGraphApi && (!result || result.isSilhouette)) {
+    const graphResult = await fetchViaGraphApi(target, safeSize, customToken);
     if (graphResult && graphResult.success && !graphResult.isSilhouette) {
       result = graphResult;
     } else if (!result && graphResult && graphResult.success) {
@@ -443,7 +499,7 @@ app.post('/api/get-profile-picture', async (req, res) => {
 /**
  * API Route: Download Image Proxy (Bypasses CORS and forces file download)
  */
-app.get('/api/download', async (req, res) => {
+app.get('/api/download', rateLimit, async (req, res) => {
   const { url, id = 'fb-profile' } = req.query;
 
   if (!url) {
@@ -453,30 +509,57 @@ app.get('/api/download', async (req, res) => {
   try {
     const parsedUrl = new URL(url);
     const allowedHosts = ['fbcdn.net', 'facebook.com', 'akamaihd.net', 'fbsbx.com'];
-    const isAllowed = allowedHosts.some(host => parsedUrl.hostname.endsWith(host));
+    const host = parsedUrl.hostname.toLowerCase();
+    // Exact host or a true subdomain only (prevents "evilfbcdn.net" bypass).
+    const isAllowed = allowedHosts.some(allowed => host === allowed || host.endsWith('.' + allowed));
     if (!isAllowed) {
       return res.status(403).send('Forbidden: URL must be from Facebook CDN.');
     }
 
-    const imageResponse = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    let imageResponse;
+    try {
+      imageResponse = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!imageResponse.ok) {
       return res.status(imageResponse.status).send('Failed to fetch image from source.');
     }
 
+    const contentLength = parseInt(imageResponse.headers.get('content-length') || '0', 10);
+    const MAX_BYTES = 25 * 1024 * 1024;
+    if (contentLength > MAX_BYTES) {
+      return res.status(413).send('Image is too large to download.');
+    }
+
     const contentType = imageResponse.headers.get('content-type') || 'image/jpeg';
-    const filename = `facebook_profile_${id.replace(/[^a-zA-Z0-9_-]/g, '_')}.jpg`;
+    const filename = `facebook_profile_${String(id).replace(/[^a-zA-Z0-9_-]/g, '_')}.jpg`;
 
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', contentType);
+    if (contentLength) {
+      res.setHeader('Content-Length', contentLength);
+    }
 
-    const arrayBuffer = await imageResponse.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    res.send(buffer);
+    // Stream the body instead of buffering it fully in memory.
+    const bodyStream = Readable.fromWeb(imageResponse.body);
+    bodyStream.on('error', (streamErr) => {
+      console.error('Stream error while proxying image:', streamErr.message);
+      if (!res.headersSent) {
+        res.status(502).send('Error while streaming image from source.');
+      } else {
+        res.destroy(streamErr);
+      }
+    });
+    bodyStream.pipe(res);
   } catch (err) {
     console.error('Download proxy error:', err);
     res.status(500).send('Internal error downloading the image.');
@@ -488,6 +571,22 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
-app.listen(PORT, () => {
-  console.log(`Facebook Profile Picture Downloader running at http://localhost:${PORT}`);
+// Centralized error handler: keeps internal paths/stack traces out of responses.
+app.use((err, req, res, next) => {
+  if (err && err.type === 'entity.parse.failed') {
+    return res.status(400).json({ success: false, error: 'Malformed JSON request body.' });
+  }
+  console.error('Unhandled error:', err && err.message ? err.message : err);
+  if (res.headersSent) {
+    return next(err);
+  }
+  res.status(500).json({ success: false, error: 'Internal server error.' });
 });
+
+module.exports = { app, parseFacebookInput, upgradeToMaxResolution, rateLimit };
+
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Facebook Profile Picture Downloader running at http://localhost:${PORT}`);
+  });
+}

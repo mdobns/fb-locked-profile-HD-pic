@@ -23,6 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const toast = document.getElementById('toast');
 
   let currentImageUrl = '';
+  let currentProxyUrl = '';
 
   // Ensure clean state on load
   hideError();
@@ -98,26 +99,29 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Copy direct link
+  // Copy the stable server proxy URL (the direct FB CDN URL expires and is hotlink-protected).
   copyLinkBtn.addEventListener('click', async () => {
-    if (!currentImageUrl) return;
+    const copyValue = currentProxyUrl || currentImageUrl;
+    if (!copyValue) return;
+    const absoluteUrl = new URL(copyValue, window.location.origin).href;
     try {
-      await navigator.clipboard.writeText(currentImageUrl);
-      showToast('Image link copied to clipboard!');
+      await navigator.clipboard.writeText(absoluteUrl);
+      showToast('Download link copied to clipboard!');
     } catch (err) {
       // Fallback
       const ta = document.createElement('textarea');
-      ta.value = currentImageUrl;
+      ta.value = absoluteUrl;
       document.body.appendChild(ta);
       ta.select();
       document.execCommand('copy');
       document.body.removeChild(ta);
-      showToast('Image link copied!');
+      showToast('Download link copied!');
     }
   });
 
   function displayResult(data) {
     currentImageUrl = data.imageUrl;
+    currentProxyUrl = data.proxyDownloadUrl || '';
     avatarImg.onerror = () => {
       if (currentImageUrl && !resultBox.classList.contains('hidden')) {
         hideResult();
@@ -125,7 +129,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     };
     avatarImg.src = data.imageUrl;
-
     profileName.textContent = data.name || (data.targetType === 'numeric_id' ? `User ID: ${data.target}` : `@${data.target}`);
     metaTarget.textContent = `Target: ${data.target}`;
     metaMethod.textContent = `Source: ${data.method}`;
@@ -141,10 +144,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (data.isSilhouette) {
       silhouetteNotice.classList.remove('hidden');
-      resultDescription.innerHTML = `<strong>Note:</strong> ${data.info}`;
+      resultDescription.replaceChildren(
+        strongEl('Note:'),
+        document.createTextNode(' ' + String(data.info ?? ''))
+      );
     } else if (data.isUpgraded) {
       silhouetteNotice.classList.add('hidden');
-      resultDescription.innerHTML = `🔥 <strong>Full HD Upgrade Applied:</strong> Detected preview crop <code>ctp=${data.originalResolution || '***'}</code> and automatically upgraded to maximum resolution <code>ctp=${data.originalResolution?.charAt(0) || 'p'}${data.mxResolution}</code>.`;
+      const prefix = String(data.originalResolution || '').charAt(0) || 'p';
+      resultDescription.replaceChildren(
+        document.createTextNode('🔥 '),
+        strongEl('Full HD Upgrade Applied:'),
+        document.createTextNode(' Detected preview crop '),
+        codeEl(`ctp=${String(data.originalResolution || '***')}`),
+        document.createTextNode(' and automatically upgraded to maximum resolution '),
+        codeEl(`ctp=${prefix}${String(data.mxResolution ?? '')}`),
+        document.createTextNode('.')
+      );
     } else {
       silhouetteNotice.classList.add('hidden');
       resultDescription.textContent = data.mxResolution 
@@ -207,5 +222,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+  }
+
+  // Safe DOM helpers: build nodes with textContent to avoid injecting HTML.
+  function strongEl(text) {
+    const el = document.createElement('strong');
+    el.textContent = text;
+    return el;
+  }
+
+  function codeEl(text) {
+    const el = document.createElement('code');
+    el.textContent = text;
+    return el;
   }
 });

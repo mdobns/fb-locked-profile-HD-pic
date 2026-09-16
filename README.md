@@ -68,13 +68,35 @@ FB_ACCESS_TOKEN=your_token_here
 
 ---
 
+## 🧪 Testing
+
+A dependency-free test suite (Node's built-in `node:test` runner) covers input
+parsing, the CDN resolution-upgrade logic, the rate limiter, SSRF protection, and
+error handling:
+
+```bash
+npm test
+```
+
+---
+
+## 🔒 Security Notes
+
+- `/api/download` is restricted to exact Facebook CDN hosts and their subdomains (SSRF guard).
+- API routes are rate limited (30 requests / minute / IP) and security headers (CSP, `X-Frame-Options`, `nosniff`) are set.
+- Malformed requests return JSON errors without leaking stack traces or filesystem paths.
+
+---
+
 ## 🛡️ Scope & Privacy Warning
 
-> ⚠️ **Important:** This tool will work for **publicly available profiles and publicly available locked profiles only**. Completely private, deleted, or deactivated accounts without public headers cannot be extracted.
+> ⚠️ **Important:** This tool only works for **publicly available profile pictures**. It does not bypass privacy controls.
 
-- **Public Profiles & Publicly Available Locked Profiles**: Avatars are extracted and automatically upgraded from the mobile preview crop (`ctp=p/s***`) to maximum available HD resolution (`cstp=mx***`).
-- **Profile Picture Guard & Locked Profiles**: Facebook restricts full-size downloads in its native UI, but serves a public preview crop for mobile SSR. Our engine extracts this crop and upgrades it to full resolution.
-- **Completely Private Accounts**: Profiles with full privacy restrictions that block public crawlers cannot be accessed.
+- **Public Profiles**: Avatars are extracted from the public Open Graph metadata served for the profile and, when the CDN exposes a larger `cstp=mx***` variant, the URL is upgraded to that maximum available resolution.
+- **Profile Picture Guard / locked profiles**: Facebook only serves a blurred or preview crop publicly. This tool returns whatever Facebook publicly serves; it **cannot** retrieve a full-size image that Facebook does not expose, and it cannot unlock guarded pictures.
+- **Completely private, deleted, or deactivated accounts**: Not accessible — the API returns a clear error.
+
+> Please respect Facebook's Terms of Service and only download images you have the right to use.
 
 ---
 
@@ -84,9 +106,22 @@ FB_ACCESS_TOKEN=your_token_here
 ├── server.js          # Express server, API endpoints, scraper & proxy
 ├── package.json       # Node.js project manifest & scripts
 ├── .env.example       # Environment variables template
+├── LICENSE            # MIT License
 ├── README.md          # Project documentation
+├── test/
+│   └── server.test.js # Dependency-free test suite (node:test)
 └── public/
     ├── index.html     # Semantic, accessible HTML5 layout
     ├── style.css      # Dark mode glassmorphism UI styling
     └── app.js         # Frontend interactive logic & API caller
 ```
+
+---
+
+## 📄 License
+
+Released under the [MIT License](LICENSE) © 2026 Md Oshama Bin Nur.
+
+> This project is not affiliated with, endorsed by, or sponsored by Meta Platforms, Inc.
+> "Facebook" is a trademark of Meta Platforms, Inc. Use responsibly and in accordance with
+> Facebook's Terms of Service.
