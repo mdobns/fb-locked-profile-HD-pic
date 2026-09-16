@@ -71,12 +71,45 @@ FB_ACCESS_TOKEN=your_token_here
 ## 🧪 Testing
 
 A dependency-free test suite (Node's built-in `node:test` runner) covers input
-parsing, the CDN resolution-upgrade logic, the rate limiter, SSRF protection, and
-error handling:
+parsing, profile HTML parsing, the CDN resolution-upgrade logic, the rate limiter,
+SSRF protection, and error handling:
 
 ```bash
 npm test
 ```
+
+---
+
+## ☁️ Deploying to Render (or any cloud host)
+
+Facebook frequently serves a **login wall** to crawlers running from datacenter
+IP ranges, while link-preview crawler user-agents (used by Slack/WhatsApp) may
+still receive Open Graph metadata. The server handles this by:
+
+1. Trying the mobile Safari user-agent first (richest markup, direct CDN URL with
+the `cstp=mx` HD hint).
+2. Falling back to `facebookexternalhit` and `Googlebot` user-agents, which are
+   whitelisted for Open Graph tags from datacenter IPs.
+3. **Validating** every candidate image URL before use — `lookaside.fbsbx.com`
+   links sometimes return an HTML `"this content isn't available"` page rather
+   than an image, and those are rejected instead of returned as broken images.
+4. Reporting a clear **`503 login_wall`** (not a misleading "account deleted")
+   when Facebook blocks the request.
+
+### Recommended: set an access token
+
+The single most reliable fix on a datacenter host is to supply a Graph API token:
+
+```env
+FB_ACCESS_TOKEN=your_app_or_user_access_token
+```
+
+On Render: **Dashboard → your service → Environment → Add Environment Variable**,
+key `FB_ACCESS_TOKEN`. Note that the Graph API only resolves **numeric IDs**
+without a User token — vanity usernames still rely on the crawler strategy.
+
+> The server also accepts a per-request token from the UI's **Advanced Settings**
+> field (sent as `customToken`), useful for testing.
 
 ---
 

@@ -213,112 +213,198 @@ function upgradeToMaxResolution(cdnUrl) {
 }
 
 /**
- * Strategy 1 (Primary - Curl Ideology):
- * Curls the profile link with a mobile User-Agent to retrieve the SSR HTML,
- * validates whether the account exists or is disabled, and extracts the CDN profile picture preview link.
+ * User agents tried in order when fetching a profile page. The mobile Safari
+ * UA yields the richest markup (direct scontent CDN URL with the `cstp=mx` HD
+ * hint) but is the most likely to hit a login wall on cloud hosts such as
+ * Render. Link-preview crawlers still receive Open Graph tags from datacenter
+ * IPs, so they act as a fallback (their `og:image` is often a lookaside URL
+ * that must be validated before use).
+ */
+const UA_ATTEMPTS = [
+  {
+    userAgent:
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1',
+    method: 'Direct Curl + mx Upgrade',
+  },
+  {
+    userAgent: 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+    method: 'Crawler UA + mx Upgrade',
+  },
+  {
+    userAgent: 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+    method: 'Crawler UA + mx Upgrade',
+  },
+];
+
+const BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+/** Builds the Facebook profile URL for an id/username/URL target. */
+function buildProfileUrl(target) {
+  if (/^https?:\/\//i.test(target)) return target;
+  if (/^\d+$/.test(target)) return `https://www.facebook.com/profile.php?id=${target}`;
+  return `https://www.facebook.com/${encodeURIComponent(target)}`;
+}
+
+/**
+ * Orders candidate image URLs so that direct CDN links (which carry the
+ * `cstp=mx` HD hint) are preferred over lookaside proxy links, which may
+ * serve an HTML error page instead of an image.
+ */
+function rankImageCandidate(url) {
+  if (url.includes('lookaside')) return 2;
+  if (url.includes('fbcdn.net') || url.includes('fbsbx.com')) return 0;
+  return 1;
+}
+
+/**
+ * Parses the SSR HTML of a Facebook profile page.
+ *
+ * Returns:
+ *   { notFound }            - Facebook explicitly said the page is unavailable
+ *   { blocked }             - a login wall was served (NOT proof of deletion)
+ *   { candidates, name }    - zero or more candidate image URLs, best first
+ */
+function parseProfileHtml(html, target) {
+  const lowerHtml = html.toLowerCase();
+
+  const hasNotFoundMessage =
+    lowerHtml.includes("this page isn't available") ||
+    lowerHtml.includes("this content isn't available") ||
+    lowerHtml.includes('the link you followed may be broken') ||
+    lowerHtml.includes('page not found') ||
+    lowerHtml.includes('may have expired');
+
+  // A login wall / cookie interstitial is NOT proof that the account is gone.
+  const hasLoginWall =
+    lowerHtml.includes('log into facebook') ||
+    lowerHtml.includes('you must log in') ||
+    lowerHtml.includes('email or mobile number') ||
+    lowerHtml.includes('forgot password');
+
+  // Collect candidate image URLs: og:image first, then any inline scontent link.
+  const candidates = [];
+  const ogMatch =
+    html.match(/<meta[^>]*property=["'](?:og:image|twitter:image)["'][^>]*content=["']([^"']+)["']/i) ||
+    html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["'](?:og:image|twitter:image)["']/i);
+  if (ogMatch) candidates.push(ogMatch[1]);
+
+  const scontentMatches = html.match(/https:\/\/[^"'\s<>\\]*scontent[^"'\s<>\\]*/gi) || [];
+  for (const match of scontentMatches) candidates.push(match);
+
+  let ogTitle = null;
+  const titleMatch =
+    html.match(/<meta[^>]*property=["'](?:og:title|og:image:alt)["'][^>]*content=["']([^"']+)["']/i) ||
+    html.match(/<title>([^<]+)<\/title>/i);
+  if (titleMatch) ogTitle = titleMatch[1].replace(/\|\s*Facebook$/i, '').trim();
+
+  const normalized = [...new Set(candidates.map(u => u.replace(/&amp;/g, '&')))].sort(
+    (a, b) => rankImageCandidate(a) - rankImageCandidate(b)
+  );
+
+  // Explicit "not available" page with no candidate at all => truly gone.
+  if (hasNotFoundMessage && normalized.length === 0) {
+    return { notFound: true, message: 'This Facebook profile does not exist or has been deactivated/removed.' };
+  }
+
+  if (normalized.length > 0) {
+    return { candidates: normalized, name: ogTitle || null };
+  }
+
+  if (hasLoginWall) {
+    return {
+      blocked: true,
+      message:
+        'Facebook returned a login wall instead of the public profile. This usually happens when the app is hosted on a cloud/datacenter IP.',
+    };
+  }
+
+  return { candidates: [], name: ogTitle || null };
+}
+
+/**
+ * Verifies that a URL actually serves an image. Lookaside links in particular
+ * can return an HTML "content isn't available" page, which would otherwise be
+ * handed to the browser as a broken image.
+ */
+async function validateImageUrl(url) {
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': BROWSER_UA, Accept: 'image/avif,image/webp,image/*,*/*;q=0.8' },
+    });
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    // Release the body without downloading it in full.
+    if (res.body && typeof res.body.cancel === 'function') {
+      await res.body.cancel().catch(() => {});
+    }
+    if (!res.ok) return false;
+    return contentType.startsWith('image/');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Strategy 1 (Primary):
+ * Fetches the profile page (trying each user-agent) and returns the first
+ * candidate image URL that is verified to serve real image bytes.
  */
 async function curlAndExtractProfilePicture(target) {
-  let profileUrl;
-  if (/^https?:\/\//i.test(target)) {
-    profileUrl = target;
-  } else if (/^\d+$/.test(target)) {
-    profileUrl = `https://www.facebook.com/profile.php?id=${target}`;
-  } else {
-    profileUrl = `https://www.facebook.com/${encodeURIComponent(target)}`;
-  }
+  const profileUrl = buildProfileUrl(target);
+  let sawBlocked = null;
+  let sawNotFound = null;
+  let fallbackName = null;
 
-  try {
-    const res = await fetch(profileUrl, {
-      method: 'GET',
-      redirect: 'follow',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-    });
+  for (const attempt of UA_ATTEMPTS) {
+    try {
+      const res = await fetch(profileUrl, {
+        method: 'GET',
+        redirect: 'follow',
+        headers: {
+          'User-Agent': attempt.userAgent,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      });
 
-    if (res.status === 404) {
-      return { notFound: true, message: 'Facebook returned HTTP 404 (Profile Not Found).' };
-    }
+      if (res.status === 404) {
+        return { notFound: true, message: 'Facebook returned HTTP 404 (Profile Not Found).' };
+      }
+      if (!res.ok) continue;
 
-    if (res.ok) {
       const html = await res.text();
-      const lowerHtml = html.toLowerCase();
+      const parsed = parseProfileHtml(html, target);
 
-      // Check for Facebook's explicit "account does not exist" or "page unavailable" indicators
-      const hasNotFoundMessage = 
-        lowerHtml.includes("this page isn't available") ||
-        lowerHtml.includes("this content isn't available") ||
-        lowerHtml.includes("the link you followed may be broken") ||
-        lowerHtml.includes("page not found");
+      if (parsed.notFound) sawNotFound = parsed;
+      if (parsed.blocked) sawBlocked = parsed;
+      if (!fallbackName && parsed.name) fallbackName = parsed.name;
+      if (!parsed.candidates || parsed.candidates.length === 0) continue;
 
-      // Extract og:image
-      let ogImage = null;
-      const ogMatch = html.match(/<meta[^>]*property=["'](?:og:image|twitter:image)["'][^>]*content=["']([^"']+)["']/i) ||
-                      html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["'](?:og:image|twitter:image)["']/i);
-      if (ogMatch) {
-        ogImage = ogMatch[1];
-      }
-
-      // If page shows "not available" and has no real photo, account does not exist
-      if (hasNotFoundMessage && (!ogImage || ogImage.includes('lookaside') || ogImage.includes('static.xx.fbcdn'))) {
-        return { notFound: true, message: 'This Facebook profile does not exist or has been deactivated/removed.' };
-      }
-
-      let ogTitle = null;
-      const titleMatch = html.match(/<meta[^>]*property=["'](?:og:title|og:image:alt)["'][^>]*content=["']([^"']+)["']/i) ||
-                         html.match(/<title>([^<]+)<\/title>/i);
-      if (titleMatch) {
-        ogTitle = titleMatch[1].replace(/\|\s*Facebook$/i, '').trim();
-      }
-
-      // Check if image points to Facebook CDN (scontent or fbcdn)
-      if (ogImage && (ogImage.includes('fbcdn.net') || ogImage.includes('facebook.com') || ogImage.includes('fbsbx.com'))) {
-        const rawPreviewUrl = ogImage.replace(/&amp;/g, '&');
-        const upgradeInfo = upgradeToMaxResolution(rawPreviewUrl);
-        const isSilhouette = rawPreviewUrl.includes('silhouette') || rawPreviewUrl.includes('static.xx.fbcdn');
-
+      // Validate candidates in priority order and use the first real image.
+      for (const candidate of parsed.candidates) {
+        if (!(await validateImageUrl(candidate))) continue;
+        const upgradeInfo = upgradeToMaxResolution(candidate);
         return {
           success: true,
-          method: 'Direct Curl + mx Upgrade',
+          method: attempt.method,
           imageUrl: upgradeInfo.url,
-          previewUrl: rawPreviewUrl,
+          previewUrl: candidate,
           mxResolution: upgradeInfo.mxVal,
           originalResolution: upgradeInfo.origVal,
           isUpgraded: upgradeInfo.upgraded,
-          name: ogTitle || null,
-          isSilhouette,
+          name: parsed.name || fallbackName,
+          isSilhouette: candidate.includes('silhouette') || candidate.includes('static.xx.fbcdn'),
         };
       }
-
-      // Fallback inside curled HTML: find any scontent img tag
-      const scontentMatch = html.match(/https:\/\/[^"'\s<>\\]*scontent[^"'\s<>\\]*/i);
-      if (scontentMatch) {
-        const rawPreviewUrl = scontentMatch[0].replace(/&amp;/g, '&');
-        const upgradeInfo = upgradeToMaxResolution(rawPreviewUrl);
-        return {
-          success: true,
-          method: 'Direct Curl (HTML Regex) + mx Upgrade',
-          imageUrl: upgradeInfo.url,
-          previewUrl: rawPreviewUrl,
-          mxResolution: upgradeInfo.mxVal,
-          originalResolution: upgradeInfo.origVal,
-          isUpgraded: upgradeInfo.upgraded,
-          name: ogTitle || null,
-          isSilhouette: rawPreviewUrl.includes('silhouette'),
-        };
-      }
-
-      // If no image was found at all and title is generic "Facebook"
-      if (!ogImage && (!ogTitle || ogTitle === 'Facebook')) {
-        return { notFound: true, message: 'Facebook profile not found.' };
-      }
+    } catch (err) {
+      console.warn(`Profile fetch failed (${attempt.userAgent.slice(0, 24)}...): ${err.message}`);
     }
-  } catch (err) {
-    console.warn(`Curl extraction failed: ${err.message}`);
   }
 
+  // No usable image. Prefer a definitive "not found" over a login-wall report,
+  // and never claim an account was deleted based only on a login wall.
+  if (sawNotFound) return sawNotFound;
+  if (sawBlocked) return sawBlocked;
   return null;
 }
 
@@ -440,7 +526,7 @@ app.post('/api/get-profile-picture', rateLimit, async (req, res) => {
 
   let result = null;
 
-  // 1. Primary Strategy: Curl the profile directly
+  // 1. Primary Strategy: fetch the profile page (crawler UA first)
   const curlResult = await curlAndExtractProfilePicture(target);
   if (curlResult && curlResult.success) {
     result = curlResult;
@@ -448,9 +534,13 @@ app.post('/api/get-profile-picture', rateLimit, async (req, res) => {
 
   // Share links are opaque redirect URLs and cannot be resolved by the Graph API
   // path; they are handled by the crawler above only.
-  const canUseGraphApi = parsed.type !== 'share_url';
+  // The Graph API cannot resolve vanity usernames without a User token, so we
+  // only consult it for numeric IDs or when the caller supplied a token.
+  const hasToken = !!(customToken || process.env.FB_ACCESS_TOKEN);
+  const canUseGraphApi =
+    parsed.type !== 'share_url' && (parsed.type === 'numeric_id' || hasToken);
 
-  // 2. Fallback to Graph API if curl didn't find image or returned silhouette
+  // 2. Fallback to Graph API if the crawl didn't yield an image or returned silhouette
   if (canUseGraphApi && (!result || result.isSilhouette)) {
     const graphResult = await fetchViaGraphApi(target, safeSize, customToken);
     if (graphResult && graphResult.success && !graphResult.isSilhouette) {
@@ -458,19 +548,38 @@ app.post('/api/get-profile-picture', rateLimit, async (req, res) => {
     } else if (!result && graphResult && graphResult.success) {
       result = graphResult;
     } else if (curlResult?.notFound && graphResult?.notFound) {
-      // Both confirmed account does not exist
+      // Both strategies independently confirmed the account is gone.
       return res.status(404).json({
         success: false,
-        error: `Facebook account "@${target}" does not exist, has been deleted, or is deactivated.`
+        error: `Facebook account "@${target}" does not exist, has been deleted, or is deactivated.`,
       });
     }
   }
 
-  // 3. If account was not found or picture could not be extracted, return clean 404 error
-  if (!result || !result.imageUrl) {
+  // 2b. The crawler independently confirmed the account is gone (no need for Graph).
+  if (!result && curlResult?.notFound) {
     return res.status(404).json({
       success: false,
-      error: `Could not find a Facebook profile or extract a profile picture for "${target}". Please check that the account exists and is publicly accessible.`
+      error: `Facebook account "@${target}" does not exist, has been deleted, or is deactivated.`,
+    });
+  }
+
+  // 3. No image could be extracted.
+  if (!result || !result.imageUrl) {
+    // Distinguish "Facebook blocked us" from "this profile is not public /
+    // does not exist", otherwise valid profiles are wrongly reported as deleted.
+    const blocked = curlResult?.blocked;
+    return res.status(blocked ? 503 : 404).json({
+      success: false,
+      error: blocked
+        ? `Facebook served a login wall instead of "@${target}". This typically happens when the app runs on a cloud/datacenter IP (e.g. Render). ` +
+          'Set FB_ACCESS_TOKEN in the environment, or try a numeric profile ID, and try again.'
+        : `Could not find a Facebook profile or extract a profile picture for "${target}". ` +
+          'Please check that the account exists and is publicly accessible.',
+      reason: blocked ? 'login_wall' : 'not_found',
+      hint: blocked
+        ? 'Datacenter IPs are frequently blocked by Facebook. A Graph API access token is the reliable fix.'
+        : undefined,
     });
   }
 
@@ -583,7 +692,16 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, error: 'Internal server error.' });
 });
 
-module.exports = { app, parseFacebookInput, upgradeToMaxResolution, rateLimit };
+module.exports = {
+  app,
+  parseFacebookInput,
+  upgradeToMaxResolution,
+  rateLimit,
+  parseProfileHtml,
+  buildProfileUrl,
+  rankImageCandidate,
+  validateImageUrl,
+};
 
 if (require.main === module) {
   app.listen(PORT, () => {

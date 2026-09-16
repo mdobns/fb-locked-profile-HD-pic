@@ -8,7 +8,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { app, parseFacebookInput, upgradeToMaxResolution, rateLimit } = require('../server.js');
+const { app, parseFacebookInput, upgradeToMaxResolution, rateLimit, parseProfileHtml, buildProfileUrl, rankImageCandidate } = require('../server.js');
 
 /* ------------------------------------------------------------------ */
 /* parseFacebookInput                                                  */
@@ -154,6 +154,78 @@ test('rateLimit: allows up to the limit then returns 429 with Retry-After', () =
   assert.equal(statusCode, 429);
   assert.equal(passed, 30);
   assert.ok(Number(retryAfter) >= 1);
+});
+
+/* ------------------------------------------------------------------ */
+/* parseProfileHtml / buildProfileUrl (datacenter login-wall handling) */
+/* ------------------------------------------------------------------ */
+
+test('buildProfileUrl: numeric vs username vs URL', () => {
+  assert.equal(buildProfileUrl('4'), 'https://www.facebook.com/profile.php?id=4');
+  assert.equal(buildProfileUrl('zuck'), 'https://www.facebook.com/zuck');
+  assert.equal(buildProfileUrl('https://m.facebook.com/zuck'), 'https://m.facebook.com/zuck');
+});
+
+test('parseProfileHtml: extracts og:image and name from real profile HTML', () => {
+  const html = `
+    <html><head>
+      <title>Mark Zuckerberg</title>
+      <meta property="og:image" content="https://scontent.xx.fbcdn.net/v/t39/a.jpg?cstp=mx711x711&amp;ctp=s711x711" />
+      <meta property="og:title" content="Mark Zuckerberg" />
+    </head></html>`;
+  const r = parseProfileHtml(html, 'zuck');
+  assert.equal(r.name, 'Mark Zuckerberg');
+  assert.deepEqual(r.candidates, [
+    'https://scontent.xx.fbcdn.net/v/t39/a.jpg?cstp=mx711x711&ctp=s711x711',
+  ]);
+  // The HD upgrade is applied by the caller from these candidates.
+  assert.equal(upgradeToMaxResolution(r.candidates[0]).mxVal, '711x711');
+});
+
+test('parseProfileHtml: prefers direct CDN over lookaside candidates', () => {
+  const html = `
+    <meta property="og:image" content="https://lookaside.fbsbx.com/lookaside/crawler/media/?media_id=4" />
+    <img src="https://scontent.xx.fbcdn.net/v/t39/b.jpg?cstp=mx720x720&amp;ctp=p100x100" />`;
+  const r = parseProfileHtml(html, 'zuck');
+  assert.equal(r.candidates[0].includes('scontent'), true);
+  assert.equal(r.candidates[1].includes('lookaside'), true);
+});
+
+test('parseProfileHtml: reports notFound on the explicit "not available" page', () => {
+  const html = `<html><head><title>Facebook</title></head><body>This page isn't available The link you followed may be broken.</body></html>`;
+  const r = parseProfileHtml(html, 'nobody');
+  assert.equal(r.notFound, true);
+});
+
+test('parseProfileHtml: a login wall is NOT reported as notFound (Render bug)', () => {
+  // This is what Facebook serves to datacenter IPs for a VALID profile.
+  const html = `<html><head><title>Facebook</title></head><body>Explore the things you love. Log into Facebook Email or mobile number Password</body></html>`;
+  const r = parseProfileHtml(html, 'zuck');
+  assert.equal(r.notFound, undefined, 'must not claim the account was deleted');
+  assert.equal(r.blocked, true);
+  assert.match(r.message, /login wall/i);
+});
+
+test('parseProfileHtml: generic page with no markers yields no candidates', () => {
+  const r = parseProfileHtml('<html><head><title>Facebook</title></head></html>', 'x');
+  assert.deepEqual(r.candidates, []);
+  assert.equal(r.notFound, undefined);
+  assert.equal(r.blocked, undefined);
+});
+
+test('parseProfileHtml: "content isn\'t available" lookaside page is notFound when no image', () => {
+  // Observed for some accounts: og:image is a lookaside URL whose body is an
+  // HTML "content isn't available" page (not an image).
+  const html = `<html><head><title>Facebook</title></head><body>Sorry, this content isn't available at the moment The link you followed may have expired.</body></html>`;
+  const r = parseProfileHtml(html, 'zuck');
+  assert.equal(r.notFound, true);
+});
+
+test('rankImageCandidate: direct CDN ranks above lookaside', () => {
+  assert.ok(
+    rankImageCandidate('https://scontent.xx.fbcdn.net/a.jpg') <
+      rankImageCandidate('https://lookaside.fbsbx.com/x')
+  );
 });
 
 /* ------------------------------------------------------------------ */
