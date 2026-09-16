@@ -236,6 +236,10 @@ const UA_ATTEMPTS = [
   },
 ];
 
+/** User agent used by the native Facebook Android app. */
+const FB_APP_UA =
+  'Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100 Mobile Safari/537.36 [FBAN/FB4A;FBAV/340.0.0.0]';
+
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
@@ -956,6 +960,8 @@ app.get('/api/debug-resolve', rateLimit, async (req, res) => {
         ['plugins/page.php', `https://www.facebook.com/plugins/page.php?href=${encodeURIComponent('https://www.facebook.com/' + target)}`, iPhone],
         ['{u}?__a=1', `https://www.facebook.com/${enc}?__a=1&__d=dis`, iPhone],
         ['web.facebook /{u}', `https://web.facebook.com/${enc}`, iPhone],
+        ['www /{u} FBAN', `https://www.facebook.com/${enc}`, FB_APP_UA],
+        ['m /{u} FBAN', `https://m.facebook.com/${enc}`, FB_APP_UA],
       ];
 
   for (const [label, url, ua] of forms) {
