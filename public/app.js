@@ -122,13 +122,16 @@ document.addEventListener('DOMContentLoaded', () => {
   function displayResult(data) {
     currentImageUrl = data.imageUrl;
     currentProxyUrl = data.proxyDownloadUrl || '';
+    // Display through the inline proxy: lookaside URLs reject browser UAs, so
+    // loading them directly would show a broken image.
+    const displaySrc = data.displayProxyUrl || data.imageUrl;
     avatarImg.onerror = () => {
       if (currentImageUrl && !resultBox.classList.contains('hidden')) {
         hideResult();
         showError('The profile picture could not be loaded from Facebook servers. The image link may have expired or access was blocked.');
       }
     };
-    avatarImg.src = data.imageUrl;
+    avatarImg.src = displaySrc;
     profileName.textContent = data.name || (data.targetType === 'numeric_id' ? `User ID: ${data.target}` : `@${data.target}`);
     metaTarget.textContent = `Target: ${data.target}`;
     metaMethod.textContent = `Source: ${data.method}`;
@@ -169,7 +172,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Set download link pointing to server proxy
     downloadBtn.href = data.proxyDownloadUrl;
-    openLinkBtn.href = data.imageUrl;
+    openLinkBtn.href = data.displayProxyUrl || data.imageUrl;
 
     resultBox.classList.remove('hidden');
     resultBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });

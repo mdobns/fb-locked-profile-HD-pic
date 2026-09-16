@@ -326,22 +326,50 @@ function parseProfileHtml(html, target) {
  * Verifies that a URL actually serves an image. Lookaside links in particular
  * can return an HTML "content isn't available" page, which would otherwise be
  * handed to the browser as a broken image.
+ *
+ * NOTE: lookaside URLs serve image bytes only to crawler user-agents (a browser
+ * UA receives HTML), so each UA is tried until one yields an image content type.
  */
+const VALIDATION_UAS = [
+  'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+  'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+  BROWSER_UA,
+];
+
 async function validateImageUrl(url) {
-  try {
-    const res = await fetch(url, {
-      headers: { 'User-Agent': BROWSER_UA, Accept: 'image/avif,image/webp,image/*,*/*;q=0.8' },
-    });
-    const contentType = (res.headers.get('content-type') || '').toLowerCase();
-    // Release the body without downloading it in full.
-    if (res.body && typeof res.body.cancel === 'function') {
-      await res.body.cancel().catch(() => {});
-    }
-    if (!res.ok) return false;
-    return contentType.startsWith('image/');
-  } catch {
-    return false;
+  const res = await fetchImageResponse(url);
+  if (!res) return false;
+  if (res.body && typeof res.body.cancel === 'function') {
+    await res.body.cancel().catch(() => {});
   }
+  return true;
+}
+
+/**
+ * Fetches an image URL trying user-agents until one returns image bytes.
+ * Returns the successful Response (body unconsumed) or null.
+ *
+ * This is required because `lookaside.fbsbx.com` serves the actual image only
+ * to crawler user-agents; a normal browser UA receives an HTML page instead.
+ */
+async function fetchImageResponse(url, { signal } = {}) {
+  for (const userAgent of VALIDATION_UAS) {
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': userAgent, Accept: 'image/avif,image/webp,image/*,*/*;q=0.8' },
+        signal,
+      });
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (res.ok && contentType.startsWith('image/')) return res;
+      // Wrong content type: discard the body and try the next user-agent.
+      if (res.body && typeof res.body.cancel === 'function') {
+        await res.body.cancel().catch(() => {});
+      }
+    } catch {
+      // try the next user-agent
+    }
+  }
+  return null;
 }
 
 /**
@@ -505,11 +533,13 @@ app.post('/api/get-profile-picture', rateLimit, async (req, res) => {
   if (parsed.type === 'cdn_url') {
     const upgradeInfo = upgradeToMaxResolution(parsed.value);
     const proxyDownloadUrl = `/api/download?url=${encodeURIComponent(upgradeInfo.url)}&id=cdn_photo`;
+    const displayProxyUrl = `/api/image?url=${encodeURIComponent(upgradeInfo.url)}`;
     return res.json({
       success: true,
       target: 'Direct CDN Photo',
       targetType: 'cdn_url',
       imageUrl: upgradeInfo.url,
+      displayProxyUrl,
       previewUrl: parsed.value,
       mxResolution: upgradeInfo.mxVal,
       originalResolution: upgradeInfo.origVal,
@@ -583,14 +613,18 @@ app.post('/api/get-profile-picture', rateLimit, async (req, res) => {
     });
   }
 
-  // Prepare download proxy URL
+  // Prepare proxy URLs. The inline proxy is used for display (<img>/open in tab)
+  // because lookaside URLs reject browser user-agents; the download proxy forces
+  // an attachment response.
   const proxyDownloadUrl = `/api/download?url=${encodeURIComponent(result.imageUrl)}&id=${encodeURIComponent(target)}`;
+  const displayProxyUrl = `/api/image?url=${encodeURIComponent(result.imageUrl)}`;
 
   return res.json({
     success: true,
     target,
     targetType: parsed.type,
     imageUrl: result.imageUrl,
+    displayProxyUrl,
     previewUrl: result.previewUrl || result.imageUrl,
     mxResolution: result.mxResolution || null,
     originalResolution: result.originalResolution || null,
@@ -629,18 +663,15 @@ app.get('/api/download', rateLimit, async (req, res) => {
     const timeout = setTimeout(() => controller.abort(), 15000);
     let imageResponse;
     try {
-      imageResponse = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
-        signal: controller.signal,
-      });
+      // Lookaside URLs only serve image bytes to crawler user-agents, so use the
+      // shared fetcher that negotiates the correct UA instead of a plain fetch.
+      imageResponse = await fetchImageResponse(url, { signal: controller.signal });
     } finally {
       clearTimeout(timeout);
     }
 
-    if (!imageResponse.ok) {
-      return res.status(imageResponse.status).send('Failed to fetch image from source.');
+    if (!imageResponse) {
+      return res.status(502).send('Failed to fetch image from source.');
     }
 
     const contentLength = parseInt(imageResponse.headers.get('content-length') || '0', 10);
@@ -678,6 +709,57 @@ app.get('/api/download', rateLimit, async (req, res) => {
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
+/**
+ * API Route: Inline image proxy.
+ *
+ * Used for the <img> preview and "Open in Tab". Lookaside URLs are not directly
+ * loadable by a browser (they require a crawler user-agent), so the frontend
+ * points at this endpoint instead and the server negotiates the correct UA.
+ */
+app.get('/api/image', rateLimit, async (req, res) => {
+  const { url } = req.query;
+
+  if (!url) {
+    return res.status(400).send('Missing image URL parameter.');
+  }
+
+  try {
+    const parsedUrl = new URL(url);
+    const allowedHosts = ['fbcdn.net', 'facebook.com', 'akamaihd.net', 'fbsbx.com'];
+    const host = parsedUrl.hostname.toLowerCase();
+    const isAllowed = allowedHosts.some(allowed => host === allowed || host.endsWith('.' + allowed));
+    if (!isAllowed) {
+      return res.status(403).send('Forbidden: URL must be from Facebook CDN.');
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    let imageResponse;
+    try {
+      imageResponse = await fetchImageResponse(url, { signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!imageResponse) {
+      return res.status(502).send('Failed to fetch image from source.');
+    }
+
+    res.setHeader('Content-Type', imageResponse.headers.get('content-type') || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+
+    const bodyStream = Readable.fromWeb(imageResponse.body);
+    bodyStream.on('error', () => {
+      if (!res.headersSent) res.status(502).end();
+      else res.destroy();
+    });
+    bodyStream.pipe(res);
+  } catch (err) {
+    console.error('Image proxy error:', err.message);
+    res.status(500).send('Internal error fetching the image.');
+  }
 });
 
 // Centralized error handler: keeps internal paths/stack traces out of responses.

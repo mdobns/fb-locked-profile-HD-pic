@@ -228,6 +228,23 @@ test('rankImageCandidate: direct CDN ranks above lookaside', () => {
   );
 });
 
+test('HTTP: /api/image rejects non-Facebook hosts and missing url', async () => {
+  const server = app.listen(0);
+  await new Promise(r => server.once('listening', r));
+  const { port } = server.address();
+  try {
+    const missing = await fetch(`http://127.0.0.1:${port}/api/image`);
+    assert.equal(missing.status, 400);
+
+    const evil = await fetch(
+      `http://127.0.0.1:${port}/api/image?url=${encodeURIComponent('http://evilfbcdn.net/x')}`
+    );
+    assert.equal(evil.status, 403);
+  } finally {
+    server.close();
+  }
+});
+
 /* ------------------------------------------------------------------ */
 /* HTTP integration                                                    */
 /* ------------------------------------------------------------------ */
